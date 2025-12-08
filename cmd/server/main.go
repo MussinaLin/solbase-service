@@ -45,7 +45,7 @@ func main() {
 	log.Info("Initializing services...")
 
 	// X402 verifier
-	x402Verifier := services.NewX402Verifier(cfg.FacilitatorURL)
+	x402Verifier := services.NewX402Verifier(cfg.FacilitatorURL, cfg.SolanaNetwork)
 
 	// Base payment service
 	basePaymentService, err := services.NewBasePaymentService(cfg.BaseNetwork, cfg.BaseProxyPrivateKey)
@@ -107,15 +107,13 @@ func main() {
 	// Health check endpoint (not under API prefix)
 	router.GET("/health", healthHandler.Check)
 
-	// API routes
+	// API routes (simplified: 2 endpoints)
 	api := router.Group("/" + cfg.APIPrefix)
 	{
-		// Payment intents endpoints
+		// POST /intents - Create intent with X402 proof (async processing)
 		api.POST("/intents", paymentIntentsHandler.CreateIntent)
+		// GET /intents?intent_id={id} - Get combined status + receipt
 		api.GET("/intents", paymentIntentsHandler.GetIntent)
-		api.POST("/intents/:id/solana-proof", paymentIntentsHandler.SubmitSolanaProof)
-		api.POST("/intents/:id/trigger-base-payment", paymentIntentsHandler.TriggerBasePayment)
-		api.GET("/intents/:id/receipt", paymentIntentsHandler.GetReceipt)
 	}
 
 	// Start server

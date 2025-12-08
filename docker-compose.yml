@@ -2,51 +2,35 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:15-alpine
     container_name: x402-postgres
-    restart: unless-stopped
     environment:
       POSTGRES_USER: x402
       POSTGRES_PASSWORD: x402_password
       POSTGRES_DB: x402_payments
     ports:
-      - '5432:5432'
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    networks:
-      - x402-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U x402"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     container_name: x402-redis
-    restart: unless-stopped
     ports:
-      - '6379:6379'
+      - "6379:6379"
     volumes:
       - redis_data:/data
-    networks:
-      - x402-network
-
-  # Optional: Prisma Studio for database GUI
-  # Uncomment if needed
-  # prisma-studio:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   command: npx prisma studio
-  #   ports:
-  #     - '5555:5555'
-  #   environment:
-  #     DATABASE_URL: postgresql://x402:x402_password@postgres:5432/x402_payments
-  #   depends_on:
-  #     - postgres
-  #   networks:
-  #     - x402-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   postgres_data:
   redis_data:
-
-networks:
-  x402-network:
-    driver: bridge

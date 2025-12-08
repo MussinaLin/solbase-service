@@ -28,7 +28,8 @@ type PaymentIntent struct {
 	BaseTxHash         *string        `gorm:"type:varchar(66)" json:"base_tx_hash,omitempty"`
 
 	// Status tracking
-	Status             string         `gorm:"type:varchar(20);not null;index" json:"status"`
+	Status             string         `gorm:"type:varchar(30);not null;index" json:"status"`
+	ErrorMessage       *string        `gorm:"type:text" json:"error_message,omitempty"`
 
 	// Timestamps
 	CreatedAt          time.Time      `gorm:"not null" json:"created_at"`
@@ -46,22 +47,17 @@ func (PaymentIntent) TableName() string {
 
 // Payment status constants
 const (
-	StatusPending      = "PENDING"
-	StatusSolSettled   = "SOL_SETTLED"
-	StatusBaseSettling = "BASE_SETTLING"
-	StatusBaseSettled  = "BASE_SETTLED"
-	StatusCompleted    = "COMPLETED"
-	StatusExpired      = "EXPIRED"
+	StatusPending            = "PENDING"
+	StatusVerificationFailed = "VERIFICATION_FAILED"
+	StatusSolSettled         = "SOL_SETTLED"
+	StatusBaseSettling       = "BASE_SETTLING"
+	StatusBaseSettled        = "BASE_SETTLED"
+	StatusExpired            = "EXPIRED"
 )
 
 // IsExpired checks if the payment intent has expired
 func (p *PaymentIntent) IsExpired() bool {
 	return time.Now().After(p.ExpiresAt)
-}
-
-// CanSubmitSolanaProof checks if Solana proof can be submitted
-func (p *PaymentIntent) CanSubmitSolanaProof() bool {
-	return p.Status == StatusPending && !p.IsExpired()
 }
 
 // CanTriggerBasePayment checks if Base payment can be triggered

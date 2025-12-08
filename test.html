@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>X402 Cross-Chain Payment API Tester</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+            color: #333;
+        }
+        h1 {
+            color: #1a1a2e;
+            border-bottom: 3px solid #4a69bd;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #4a69bd;
+            margin-top: 0;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 20px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin: 10px 0 5px 0;
+            color: #555;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #4a69bd;
+        }
+        textarea {
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+        }
+        button {
+            padding: 12px 24px;
+            cursor: pointer;
+            background: #4a69bd;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            transition: background 0.2s, transform 0.1s;
+        }
+        button:hover {
+            background: #3d5aa9;
+            transform: translateY(-1px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button.secondary {
+            background: #6c757d;
+        }
+        button.secondary:hover {
+            background: #5a6268;
+        }
+        button.danger {
+            background: #dc3545;
+        }
+        button.danger:hover {
+            background: #c82333;
+        }
+        button.success {
+            background: #28a745;
+        }
+        button.success:hover {
+            background: #218838;
+        }
+        .result {
+            background: #f8f9fa;
+            padding: 15px;
+            margin-top: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #e0e0e0;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 12px;
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+        .PENDING { background: #ffd93d; color: #333; }
+        .SOL_SETTLED { background: #6bcb77; color: white; }
+        .BASE_SETTLING { background: #4d96ff; color: white; }
+        .BASE_SETTLED { background: #28a745; color: white; }
+        .VERIFICATION_FAILED { background: #ff6b6b; color: white; }
+        .EXPIRED { background: #6c757d; color: white; }
+        .polling-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #28a745;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #4a69bd;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 0 8px 8px 0;
+        }
+        .info-box h3 {
+            margin: 0 0 10px 0;
+            color: #4a69bd;
+        }
+        .info-box p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        .api-url {
+            background: #333;
+            color: #0f0;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>X402 Cross-Chain Payment API Tester</h1>
+
+    <div class="info-box">
+        <h3>API Endpoints</h3>
+        <p><strong>POST</strong> <span class="api-url">/api/intents</span> - Create intent with X402 proof</p>
+        <p><strong>GET</strong> <span class="api-url">/api/intents?intent_id={id}</span> - Get status + receipt</p>
+        <p><strong>GET</strong> <span class="api-url">/health</span> - Health check</p>
+    </div>
+
+    <div class="section">
+        <h2>1. Create Payment Intent</h2>
+        <p>Submit X402 settlement proof and merchant address to create a new payment intent.</p>
+
+        <label for="settleProof">X402 Settlement Proof (Base64):</label>
+        <textarea id="settleProof" rows="4" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+
+        <label for="merchantRecipient">Merchant Recipient (0x... address):</label>
+        <input type="text" id="merchantRecipient" placeholder="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1">
+
+        <button onclick="createIntent()">Create Intent</button>
+
+        <div id="createResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="section">
+        <h2>2. Check Payment Status</h2>
+        <p>Query the status of a payment intent. Use polling to monitor async processing.</p>
+
+        <label for="intentId">Intent ID:</label>
+        <input type="text" id="intentId" placeholder="Enter intent UUID">
+
+        <button onclick="getIntent()">Get Status</button>
+        <button onclick="startPolling()" class="success">Start Polling (2s)<span id="pollingIndicator"></span></button>
+        <button onclick="stopPolling()" class="danger">Stop Polling</button>
+
+        <div id="statusResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="section">
+        <h2>3. Health Check</h2>
+        <p>Check if the API server is running and database is connected.</p>
+
+        <button onclick="healthCheck()">Check Health</button>
+
+        <div id="healthResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="section">
+        <h2>Configuration</h2>
+        <label for="apiBase">API Base URL:</label>
+        <input type="text" id="apiBase" value="http://localhost:3001" placeholder="http://localhost:3001">
+        <button onclick="updateApiBase()" class="secondary">Update</button>
+    </div>
+
+    <script>
+        let API_BASE = 'http://localhost:3001';
+        let pollingInterval = null;
+
+        function updateApiBase() {
+            API_BASE = document.getElementById('apiBase').value.replace(/\/$/, '');
+            alert('API Base updated to: ' + API_BASE);
+        }
+
+        function showResult(elementId, content) {
+            const el = document.getElementById(elementId);
+            el.style.display = 'block';
+            el.textContent = content;
+        }
+
+        async function createIntent() {
+            const proof = document.getElementById('settleProof').value.trim();
+            const recipient = document.getElementById('merchantRecipient').value.trim();
+
+            if (!proof) {
+                alert('Please enter the X402 settlement proof');
+                return;
+            }
+            if (!recipient) {
+                alert('Please enter the merchant recipient address');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/intents`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        settle_proof: proof,
+                        merchant_recipient: recipient
+                    })
+                });
+
+                const data = await res.json();
+                showResult('createResult', JSON.stringify(data, null, 2));
+
+                if (data.intent_id) {
+                    document.getElementById('intentId').value = data.intent_id;
+                }
+            } catch (err) {
+                showResult('createResult', 'Error: ' + err.message);
+            }
+        }
+
+        async function getIntent() {
+            const intentId = document.getElementById('intentId').value.trim();
+
+            if (!intentId) {
+                alert('Please enter an intent ID');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/intents?intent_id=${intentId}`);
+                const data = await res.json();
+                displayStatus(data);
+            } catch (err) {
+                showResult('statusResult', 'Error: ' + err.message);
+            }
+        }
+
+        function displayStatus(data) {
+            const resultDiv = document.getElementById('statusResult');
+            resultDiv.style.display = 'block';
+
+            let statusBadge = '';
+            if (data.status) {
+                statusBadge = `<span class="status-badge ${data.status}">${data.status}</span>\n\n`;
+            }
+
+            resultDiv.innerHTML = statusBadge + '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+        }
+
+        function startPolling() {
+            if (pollingInterval) {
+                alert('Polling is already active');
+                return;
+            }
+
+            const intentId = document.getElementById('intentId').value.trim();
+            if (!intentId) {
+                alert('Please enter an intent ID first');
+                return;
+            }
+
+            document.getElementById('pollingIndicator').innerHTML = '<span class="polling-indicator"></span>';
+            pollingInterval = setInterval(getIntent, 2000);
+            getIntent(); // Immediate first call
+        }
+
+        function stopPolling() {
+            if (pollingInterval) {
+                clearInterval(pollingInterval);
+                pollingInterval = null;
+                document.getElementById('pollingIndicator').innerHTML = '';
+            }
+        }
+
+        async function healthCheck() {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                const data = await res.json();
+                showResult('healthResult', JSON.stringify(data, null, 2));
+            } catch (err) {
+                showResult('healthResult', 'Error: ' + err.message + '\n\nMake sure the server is running on ' + API_BASE);
+            }
+        }
+
+        // Keyboard shortcut: Ctrl+Enter to submit forms
+        document.addEventListener('keydown', function(e) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                if (document.activeElement.id === 'settleProof' || document.activeElement.id === 'merchantRecipient') {
+                    createIntent();
+                } else if (document.activeElement.id === 'intentId') {
+                    getIntent();
+                }
+            }
+        });
+    </script>
+</body>
+</html>
