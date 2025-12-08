@@ -29,8 +29,6 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 ### Installation
 
 ```bash
-cd golang-version
-
 # Install dependencies
 go mod download
 
@@ -139,7 +137,7 @@ POST /intents (with X402 proof)
 ## Project Structure
 
 ```
-golang-version/
+.
 ├── cmd/server/main.go              # Application entry point
 ├── internal/
 │   ├── config/config.go            # Configuration management
@@ -158,6 +156,7 @@ golang-version/
 │       └── error.go                # Error handling
 ├── test.html                       # Browser-based API tester
 ├── Makefile                        # Build commands
+├── CLAUDE.md                       # Claude Code instructions
 └── docker-compose.yml              # PostgreSQL + Redis
 ```
 
@@ -226,7 +225,6 @@ Open `test.html` in a browser to test the API:
 
 ```bash
 make build
-export NODE_ENV=production
 ./bin/server
 ```
 
