@@ -9,11 +9,10 @@ X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from So
 ## Development Commands
 
 ```bash
-cd golang-version
-
 # Run
 make run                      # Run the application
 make dev                      # Run with hot reload (requires air)
+go run ./cmd/server/main.go   # Run directly
 
 # Build
 make build                    # Build binary to ./bin/server
@@ -65,7 +64,32 @@ PENDING ────────────────────────
                         └──> SOL_SETTLED (rollback on failure)
 ```
 
-### Core Services (`golang-version/internal/services/`)
+### Project Structure
+
+```
+├── cmd/server/main.go              # Entry point, router setup
+├── internal/
+│   ├── config/config.go            # Configuration management
+│   ├── database/db.go              # GORM database connection
+│   ├── models/payment_intent.go    # Domain model + status helpers
+│   ├── dto/requests.go             # Request/response DTOs
+│   ├── services/
+│   │   ├── payment_intent.go       # Business logic, async processing
+│   │   ├── base_payment.go         # USDC transfers via go-ethereum
+│   │   └── x402_verifier.go        # X402 proof verification
+│   ├── handlers/
+│   │   ├── payment_intents.go      # HTTP handlers (2 endpoints)
+│   │   └── health.go               # Health check handler
+│   └── middleware/
+│       ├── logger.go               # Request logging
+│       └── error.go                # Error handling
+├── pkg/utils/address.go            # Utility functions
+├── test.html                       # Browser-based API tester
+├── Makefile                        # Build commands
+└── docker-compose.yml              # PostgreSQL + Redis
+```
+
+### Core Services (`internal/services/`)
 
 - **PaymentIntentService** (`payment_intent.go`) - Business logic, async processing via goroutines with 5-minute context timeout
 - **BasePaymentService** (`base_payment.go`) - USDC transfers via go-ethereum
@@ -129,7 +153,7 @@ The proxy wallet must have ETH for gas and sufficient USDC balance.
 
 ### Local Testing Website
 
-Open `golang-version/test.html` in a browser to test the API:
+Open `test.html` in a browser to test the API:
 - Create intent with X402 proof
 - Poll for status updates
 - Health check
