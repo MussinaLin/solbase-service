@@ -240,6 +240,42 @@
         .hidden {
             display: none;
         }
+        .terminal-notification {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        .terminal-notification.BASE_SETTLED {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .terminal-notification.VERIFICATION_FAILED {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .terminal-notification.EXPIRED {
+            background: #e2e3e5;
+            border: 1px solid #d6d8db;
+            color: #383d41;
+        }
+        .auto-flow-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .auto-flow-status {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: #28a745;
+            color: white;
+        }
+        .auto-flow-status.off {
+            background: #6c757d;
+        }
     </style>
 </head>
 <body>
@@ -376,15 +412,73 @@
         <label for="apiBase">API Base URL:</label>
         <input type="text" id="apiBase" value="http://localhost:3001" placeholder="http://localhost:3001">
         <button onclick="updateApiBase()" class="secondary">Update</button>
+        <div class="auto-flow-toggle" style="margin-top: 15px;">
+            <button id="autoFlowToggle" onclick="toggleAutoFlow()" class="success">Auto-flow: ON</button>
+            <span class="auto-flow-status" id="autoFlowStatus">Enabled</span>
+            <span style="font-size: 12px; color: #666;">(Auto-submit proof & auto-poll after proof submission)</span>
+        </div>
     </div>
 
     <script>
         let API_BASE = 'http://localhost:3001';
         let pollingInterval = null;
+        let autoFlowEnabled = true;
+
+        // Terminal states that should stop polling
+        const TERMINAL_STATES = ['BASE_SETTLED', 'VERIFICATION_FAILED', 'EXPIRED'];
 
         function updateApiBase() {
             API_BASE = document.getElementById('apiBase').value.replace(/\/$/, '');
             alert('API Base updated to: ' + API_BASE);
+        }
+
+        function toggleAutoFlow() {
+            autoFlowEnabled = !autoFlowEnabled;
+            const toggleBtn = document.getElementById('autoFlowToggle');
+            const statusSpan = document.getElementById('autoFlowStatus');
+
+            if (autoFlowEnabled) {
+                toggleBtn.textContent = 'Auto-flow: ON';
+                toggleBtn.className = 'success';
+                statusSpan.textContent = 'Enabled';
+                statusSpan.className = 'auto-flow-status';
+            } else {
+                toggleBtn.textContent = 'Auto-flow: OFF';
+                toggleBtn.className = 'secondary';
+                statusSpan.textContent = 'Disabled';
+                statusSpan.className = 'auto-flow-status off';
+            }
+        }
+
+        function showTerminalStateNotification(status) {
+            const resultDiv = document.getElementById('statusResult');
+
+            // Remove any existing notification
+            const existingNotification = resultDiv.querySelector('.terminal-notification');
+            if (existingNotification) {
+                existingNotification.remove();
+            }
+
+            const notification = document.createElement('div');
+            notification.className = `terminal-notification ${status}`;
+
+            let message = '';
+            switch(status) {
+                case 'BASE_SETTLED':
+                    message = 'Payment completed successfully! Funds transferred to Base.';
+                    break;
+                case 'VERIFICATION_FAILED':
+                    message = 'Payment verification failed. Please check the proof and try again.';
+                    break;
+                case 'EXPIRED':
+                    message = 'Payment intent has expired.';
+                    break;
+                default:
+                    message = `Final status: ${status}`;
+            }
+
+            notification.innerHTML = `<strong>${message}</strong>`;
+            resultDiv.insertBefore(notification, resultDiv.firstChild);
         }
 
         function toggleReceiverType() {
@@ -499,6 +593,17 @@
                 if (data.intent_id) {
                     document.getElementById('intentId').value = data.intent_id;
                 }
+
+                // AUTO-FLOW: Start polling automatically after successful proof submission
+                if (autoFlowEnabled && res.ok && data.status) {
+                    console.log('Auto-flow: Starting polling after proof submission');
+                    // Small delay to let the async processing start
+                    setTimeout(() => {
+                        if (!pollingInterval) {
+                            startPolling();
+                        }
+                    }, 500);
+                }
             } catch (err) {
                 showResult('proofResult', 'Error: ' + err.message);
             }
@@ -516,6 +621,13 @@
                 const res = await fetch(`${API_BASE}/api/intents?intent_id=${intentId}`);
                 const data = await res.json();
                 displayStatus(data);
+
+                // AUTO-FLOW: Stop polling if terminal state reached
+                if (autoFlowEnabled && data.status && TERMINAL_STATES.includes(data.status)) {
+                    console.log(`Auto-flow: Terminal state ${data.status} reached, stopping polling`);
+                    stopPolling();
+                    showTerminalStateNotification(data.status);
+                }
             } catch (err) {
                 showResult('statusResult', 'Error: ' + err.message);
             }

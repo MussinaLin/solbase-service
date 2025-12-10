@@ -1,4 +1,4 @@
-package dbmigrations
+package database
 
 import "embed"
 

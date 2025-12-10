@@ -1,0 +1,731 @@
+---
+glob: "**/*/api/*.go"
+alwaysApply: false
+---
+
+# API Implementation Guide - Cursor Rules
+
+You are an expert in building HTTP APIs in Go. Apply these rules consistently for all API layer code.
+
+## ⚠️ MANDATORY COMPLIANCE
+
+**ALL RULES IN THIS GUIDE ARE MANDATORY AND MUST BE FOLLOWED WITHOUT EXCEPTION.**
+
+This is not a suggestion document - these are requirements that must be adhered to for every API file you create or modify.
+
+## Core Principles
+
+1. **Thin API Layer**: API handlers should be thin - delegate business logic to service layer
+2. **Clear Error Handling**: Use consistent error response patterns
+3. **Type Safety**: Use strongly typed requests and responses
+4. **Early Returns**: Return errors immediately, avoid deep nesting
+5. **Consistent Patterns**: Follow established conventions for maintainability
+
+## File Structure
+
+### API Package Organization
+```
+internal/
+  domain/
+    api/
+      api.go          // AddRoutes + handler functions + DTOs
+      api_test.go     // Handler tests
+```
+
+### api.go Structure
+```go
+package api
+
+// Imports
+import (
+    "net/http"
+    "github.com/go-chi/chi/v5"
+    "agency/internal/httpwrap"
+    "agency/internal/domain"
+)
+
+// Constants (if any)
+const (
+    maxResultsLimit = 100
+)
+
+// AddRoutes function (must come first)
+func AddRoutes(r chi.Router, svc domain.Service) {
+    r.Post("/resource", httpwrap.Handler(createResource(svc)))
+    r.Get("/resource/{id}", httpwrap.Handler(getResource(svc)))
+    // ... other routes
+}
+
+// Request/Response DTOs (uppercase for exported response types)
+type CreateResourceRequest struct {
+    Name string `json:"name"`
+}
+
+type ResourceResponse struct {
+    ID   uuid.UUID `json:"id"`
+    Name string    `json:"name"`
+}
+
+// Handler functions (lowercase, factory functions returning httpwrap.HandlerFunc)
+func createResource(svc domain.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        // Handler implementation
+    }
+}
+```
+
+## Handler Function Pattern
+
+### Handler Signature
+- **ALWAYS** use factory functions that return `httpwrap.HandlerFunc`
+- Factory function takes service as parameter
+- Returned function signature: `func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse)`
+
+```go
+// Good: Factory function pattern
+func getResource(svc domain.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        // Implementation
+    }
+}
+
+// Bad: Direct handler
+func getResource(svc domain.Service, w http.ResponseWriter, r *http.Request) {
+    // Don't do this
+}
+```
+
+### Handler Implementation Flow
+
+**Standard flow (in order):**
+1. Parse URL parameters
+2. Parse request body (if needed)
+3. Extract context values (userID, etc.)
+4. Call service layer
+5. Handle errors with early returns
+6. Return response
+
+```go
+func createResource(svc domain.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        // 1. Parse URL parameters (if any)
+        idStr := chi.URLParam(r, "id")
+        id, err := uuid.Parse(idStr)
+        if err != nil {
+            return nil, httpwrap.NewInvalidParamErrorResponse("id")
+        }
+
+        // 2. Parse request body
+        var req CreateResourceRequest
+        if errResp := httpwrap.BindBody(r, &req); errResp != nil {
+            return nil, errResp
+        }
+
+        // 3. Extract context
+        ctx := r.Context()
+        userID := middleware.GetUserID(r)
+
+        // 4. Call service
+        result, err := svc.CreateResource(ctx, &domain.CreateParams{
+            UserID: uuid.MustParse(userID),
+            Name:   req.Name,
+        })
+        if err != nil {
+            // 5. Handle errors (see error handling section)
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusInternalServerError,
+                ErrorMsg:   err.Error(),
+                Err:        err,
+            }
+        }
+
+        // 6. Return success response
+        return &httpwrap.Response{
+            StatusCode: http.StatusOK,
+            Body: &ResourceResponse{
+                ID:   result.ID,
+                Name: result.Name,
+            },
+        }, nil
+    }
+}
+```
+
+## Request/Response DTOs
+
+### Naming Conventions
+- **Request types**: Use suffix `Request` (e.g., `CreateChannelRequest`)
+- **Response types**: Use suffix `Response` (e.g., `ChannelResponse`)
+- **Internal DTOs**: Use descriptive names without suffix (e.g., `Token`, `Trades`)
+- **All types**: Exported (start with capital letter)
+
+### Request Structures
+```go
+// Create requests
+type CreateResourceRequest struct {
+    Name        string   `json:"name"`
+    Description string   `json:"description"`
+    Tags        []string `json:"tags"`
+}
+
+// Update requests (use pointers for optional fields)
+type UpdateResourceRequest struct {
+    Name        *string `json:"name"`
+    Description *string `json:"description"`
+    MaxLimit    *int    `json:"max_limit"`
+}
+
+// Batch operations
+type DeleteResourcesRequest struct {
+    IDs []uuid.UUID `json:"ids"`
+}
+```
+
+### Response Structures
+```go
+// Single resource response
+type ResourceResponse struct {
+    ID          uuid.UUID        `json:"id"`
+    Name        string           `json:"name"`
+    Description string           `json:"description"`
+    IsActive    bool             `json:"is_active"`
+    CreatedAt   time.Time        `json:"created_at"`
+    UpdatedAt   time.Time        `json:"updated_at"`
+    // Use pointers for optional fields
+    MaxLimit    *decimal.Decimal `json:"max_limit"`
+}
+
+// List response
+type ListResourcesResponse struct {
+    Resources []*ResourceResponse `json:"resources"`
+    Total     int                 `json:"total"`
+}
+
+// Nested data structures
+type ComplexResponse struct {
+    Items  []*Item           `json:"items"`
+    Lookup map[string]*Item  `json:"lookup"`
+    Meta   *Meta             `json:"meta"`
+}
+```
+
+## Error Handling
+
+### Error Response Pattern
+Always use early returns for errors:
+```go
+// Good: Early return
+result, err := svc.Method(ctx, params)
+if err != nil {
+    return nil, &httpwrap.ErrorResponse{
+        StatusCode: http.StatusInternalServerError,
+        ErrorMsg:   err.Error(),
+        Err:        err,
+    }
+}
+
+// Continue with success flow...
+```
+
+### Domain-Specific Errors
+Use `errors.Is()` to check for domain-specific errors:
+```go
+result, err := svc.GetResource(ctx, id)
+if err != nil {
+    // Check for specific errors first
+    if errors.Is(err, domain.ErrNotFound) {
+        return nil, &httpwrap.ErrorResponse{
+            StatusCode: http.StatusNotFound,
+            ErrorMsg:   err.Error(),
+            Err:        err,
+        }
+    }
+
+    // Generic error handling
+    return nil, &httpwrap.ErrorResponse{
+        StatusCode: http.StatusInternalServerError,
+        ErrorMsg:   err.Error(),
+        Err:        err,
+    }
+}
+```
+
+### HTTP Status Code Mapping
+```go
+// 400 Bad Request - Invalid input, validation errors
+if errors.Is(err, domain.ErrInvalidInput) {
+    return nil, &httpwrap.ErrorResponse{
+        StatusCode: http.StatusBadRequest,
+        ErrorMsg:   err.Error(),
+        Err:        err,
+    }
+}
+
+// 404 Not Found - Resource not found
+if errors.Is(err, domain.ErrNotFound) {
+    return nil, &httpwrap.ErrorResponse{
+        StatusCode: http.StatusNotFound,
+        ErrorMsg:   err.Error(),
+        Err:        err,
+    }
+}
+
+// 409 Conflict - Resource conflict
+if errors.Is(err, domain.ErrConflict) {
+    return nil, &httpwrap.ErrorResponse{
+        StatusCode: http.StatusConflict,
+        ErrorMsg:   err.Error(),
+        Err:        err,
+    }
+}
+
+// 500 Internal Server Error - Unexpected errors
+return nil, &httpwrap.ErrorResponse{
+    StatusCode: http.StatusInternalServerError,
+    ErrorMsg:   err.Error(),
+    Err:        err,
+}
+```
+
+### Helper Functions for Errors
+Use httpwrap helpers when available:
+```go
+// Invalid parameter
+return nil, httpwrap.NewInvalidParamErrorResponse("id")
+
+// Invalid body (use BindBody which handles this)
+if errResp := httpwrap.BindBody(r, &req); errResp != nil {
+    return nil, errResp
+}
+```
+
+## URL Parameters
+
+### Parsing URL Parameters
+```go
+// Simple parameter
+idStr := chi.URLParam(r, "id")
+
+// Parse and validate UUID
+id, err := uuid.Parse(idStr)
+if err != nil {
+    return nil, httpwrap.NewInvalidParamErrorResponse("id")
+}
+
+// Parse and validate other types
+limitStr := chi.URLParam(r, "limit")
+limit, err := strconv.Atoi(limitStr)
+if err != nil {
+    return nil, httpwrap.NewInvalidParamErrorResponse("limit")
+}
+```
+
+### Query Parameters
+```go
+// Get query parameters
+ctx := r.Context()
+query := r.URL.Query()
+
+// Optional parameters with defaults
+limitStr := query.Get("limit")
+limit := 50 // default
+if limitStr != "" {
+    parsedLimit, err := strconv.Atoi(limitStr)
+    if err != nil {
+        return nil, httpwrap.NewInvalidParamErrorResponse("limit")
+    }
+    limit = parsedLimit
+}
+
+// Boolean parameters
+includeDeleted := query.Get("include_deleted") == "true"
+
+// Array parameters
+tags := query["tags"] // []string
+```
+
+## Request Body Handling
+
+### JSON Decoding
+**ALWAYS** use `httpwrap.BindBody` for request body parsing:
+```go
+// Good: Use httpwrap.BindBody
+var req CreateResourceRequest
+if errResp := httpwrap.BindBody(r, &req); errResp != nil {
+    return nil, errResp
+}
+
+// Bad: Manual decoding
+var req CreateResourceRequest
+err := json.NewDecoder(r.Body).Decode(&req)
+if err != nil {
+    // Don't do manual error handling
+}
+```
+
+## Context Handling
+
+### Extracting Context Values
+```go
+// Always extract context first
+ctx := r.Context()
+
+// Get user ID from middleware
+userID := middleware.GetUserID(r)
+
+// Convert to UUID when needed
+userUUID := uuid.MustParse(userID)
+```
+
+### Passing Context to Service
+**ALWAYS** pass context as first parameter to service methods:
+```go
+// Good: Pass context
+result, err := svc.CreateResource(ctx, params)
+
+// Bad: Missing context
+result, err := svc.CreateResource(params)
+```
+
+## Response Construction
+
+### Success Responses
+```go
+// Response with body
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Body: &ResourceResponse{
+        ID:   resource.ID,
+        Name: resource.Name,
+    },
+}, nil
+
+// Response without body (for updates/deletes)
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Body:       nil,
+}, nil
+
+// Created response
+return &httpwrap.Response{
+    StatusCode: http.StatusCreated,
+    Body: &CreateResourceResponse{
+        ID: resourceID,
+    },
+}, nil
+
+// Simple status responses
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Body:       map[string]string{"status": "success"},
+}, nil
+```
+
+### Response Headers (when needed)
+```go
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Header: http.Header{
+        "X-Custom-Header": []string{"value"},
+    },
+    Body: &ResourceResponse{
+        ID: resource.ID,
+    },
+}, nil
+```
+
+## Data Transformation
+
+### Domain to API DTOs
+Transform domain models to API response types:
+```go
+// Build response from domain model
+channels := make([]*ChannelResponse, 0, len(domainChannels))
+for _, ch := range domainChannels {
+    channels = append(channels, &ChannelResponse{
+        ID:          ch.ID,
+        Name:        ch.Name,
+        Description: ch.Description,
+        CreatedAt:   ch.CreatedAt,
+        UpdatedAt:   ch.UpdatedAt,
+    })
+}
+
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Body: &ListChannelsResponse{
+        Channels: channels,
+    },
+}, nil
+```
+
+### Handling Optional Fields
+```go
+// Pointers for optional fields in responses
+var maxLimit *decimal.Decimal
+if ch.MaxLimit != nil {
+    maxLimit = ch.MaxLimit
+}
+
+response := &ChannelResponse{
+    ID:       ch.ID,
+    MaxLimit: maxLimit, // nil if not set
+}
+```
+
+### Numeric Transformations
+```go
+// Decimal conversions
+amount := trade.Amount.Div(decimal.NewFromInt(10).Pow(decimal.NewFromInt(int64(decimals))))
+
+// Percentage conversions (multiply by 100)
+percentValue := value.Mul(decimal.NewFromInt(100))
+
+// Shift decimal places
+balance := decimal.NewFromInt(walletBalance.Balance).Shift(-int32(walletBalance.Decimals))
+```
+
+## AddRoutes Function
+
+### Route Registration Pattern
+```go
+func AddRoutes(r chi.Router, svc domain.Service) {
+    // Group related routes together
+    
+    // Resource CRUD
+    r.Post("/resources", httpwrap.Handler(createResource(svc)))
+    r.Get("/resources", httpwrap.Handler(listResources(svc)))
+    r.Get("/resources/{id}", httpwrap.Handler(getResource(svc)))
+    r.Put("/resources/{id}", httpwrap.Handler(updateResource(svc)))
+    r.Delete("/resources/{id}", httpwrap.Handler(deleteResource(svc)))
+    
+    // Sub-resources
+    r.Post("/resources/{id}/items", httpwrap.Handler(addItems(svc)))
+    r.Delete("/resources/{id}/items", httpwrap.Handler(removeItems(svc)))
+    r.Get("/resources/{id}/items", httpwrap.Handler(listItems(svc)))
+    
+    // Actions
+    r.Post("/resources/{id}/activate", httpwrap.Handler(activateResource(svc)))
+    r.Post("/resources/{id}/deactivate", httpwrap.Handler(deactivateResource(svc)))
+}
+```
+
+### HTTP Method Selection
+- **POST**: Create new resources, trigger actions
+- **GET**: Retrieve resources (single or list)
+- **PUT**: Update entire resource, add to collection
+- **PATCH**: Partial updates (rarely used in this codebase)
+- **DELETE**: Remove resources
+
+## Constants
+
+### API-Level Constants
+Define constants at package level when used across multiple handlers:
+```go
+const (
+    maxResultsLimit     = 100
+    defaultPageSize     = 50
+    maxTradesForDisplay = 1200
+    base10              = 10
+    percentage          = 100
+)
+```
+
+## Idempotency Patterns
+
+### DELETE Operations
+DELETE should be idempotent - return success even if resource doesn't exist:
+```go
+func deleteResource(svc domain.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        // Parse ID...
+        
+        err := svc.DeleteResource(ctx, id)
+        // Ignore NotFound errors for idempotency
+        if err != nil && !errors.Is(err, domain.ErrNotFound) {
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusInternalServerError,
+                ErrorMsg:   err.Error(),
+                Err:        err,
+            }
+        }
+
+        return &httpwrap.Response{
+            StatusCode: http.StatusOK,
+            Body:       nil,
+        }, nil
+    }
+}
+```
+
+## Complex Response Construction
+
+### Building Maps
+```go
+// Create lookup maps for efficient access
+tokenMap := make(map[string]*Token)
+for _, token := range tokens {
+    tokenMap[token.Address] = &Token{
+        Address:  token.Address,
+        Symbol:   token.Symbol,
+        Decimals: token.Decimals,
+        // ... other fields
+    }
+}
+
+return &httpwrap.Response{
+    StatusCode: http.StatusOK,
+    Body: &ListTradesResponse{
+        Trades: tradesResponse,
+        Tokens: tokenMap,
+    },
+}, nil
+```
+
+### Preallocating Slices
+```go
+// Preallocate with capacity when size is known
+resources := make([]*ResourceResponse, 0, len(domainResources))
+for _, r := range domainResources {
+    resources = append(resources, toResourceResponse(r))
+}
+```
+
+## Special Cases
+
+### Array Filtering
+```go
+// Filter data in handler when needed
+var filteredTrades []*Trade
+for _, trade := range allTrades {
+    if trade.Status == "active" {
+        filteredTrades = append(filteredTrades, trade)
+    }
+}
+```
+
+### Reversing Order
+```go
+// Use slices.Reverse when needed
+slices.Reverse(trades)
+
+// Limit results after reversing
+if len(trades) > maxTradesForDisplay {
+    trades = trades[:maxTradesForDisplay]
+}
+```
+
+## Common Patterns
+
+### Time Handling
+```go
+// Always use UTC
+now := time.Now().UTC()
+
+// Date calculations
+afterTime := now.AddDate(0, 0, -7) // 7 days ago
+```
+
+### UUID Generation
+```go
+// Generate new UUIDs
+resourceID := uuid.New()
+
+// Parse UUIDs from strings
+id, err := uuid.Parse(idStr)
+if err != nil {
+    return nil, httpwrap.NewInvalidParamErrorResponse("id")
+}
+
+// Use MustParse only when guaranteed to succeed
+userUUID := uuid.MustParse(userID) // userID from middleware
+```
+
+## Best Practices
+
+1. **Keep handlers thin**: Business logic belongs in service layer
+2. **Early returns**: Return errors immediately, avoid nesting
+3. **Consistent error handling**: Use the same pattern across all handlers
+4. **Type safety**: Always validate and parse parameters
+5. **Preallocate slices**: Use `make([]T, 0, capacity)` when size is known
+6. **Use helpers**: Leverage httpwrap.BindBody, httpwrap.NewInvalidParamErrorResponse
+7. **Clear naming**: Use descriptive DTO names that match their purpose
+8. **Document complex logic**: Add comments for non-obvious transformations
+9. **Handle nil values**: Check for nil before dereferencing pointers
+10. **UTC timestamps**: Always use `time.Now().UTC()` for consistency
+
+## Testing Requirements
+
+After implementing API handlers:
+1. Write comprehensive tests in `api_test.go`
+2. Cover all success paths
+3. Cover all error paths
+4. Test edge cases (empty data, nil values, etc.)
+5. Run `make lint` and fix all issues
+6. Run `make test` and ensure all tests pass
+
+## Example Complete Handler
+
+```go
+func createChannel(svc channel.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        // 1. Parse request body
+        var req CreateChannelRequest
+        if errResp := httpwrap.BindBody(r, &req); errResp != nil {
+            return nil, errResp
+        }
+
+        // 2. Extract context
+        ctx := r.Context()
+        userID := middleware.GetUserID(r)
+
+        // 3. Business logic check (example)
+        existingChannels, err := svc.ListChannelsByUserID(ctx, uuid.MustParse(userID))
+        if err != nil {
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusInternalServerError,
+                ErrorMsg:   err.Error(),
+                Err:        err,
+            }
+        }
+
+        if len(existingChannels) > 0 {
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusBadRequest,
+                ErrorMsg:   channel.ErrUserChannelLimit.Error(),
+                Err:        channel.ErrUserChannelLimit,
+            }
+        }
+
+        // 4. Prepare data
+        channelID := uuid.New()
+        now := time.Now().UTC()
+
+        // 5. Call service
+        err = svc.CreateChannel(ctx, &channel.CreateChannelParams{
+            ID:          channelID,
+            UserID:      uuid.MustParse(userID),
+            Name:        req.Name,
+            Icon:        req.Icon,
+            Description: req.Description,
+            Wallets:     req.Wallets,
+            CreatedAt:   now,
+        })
+        if err != nil {
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusInternalServerError,
+                ErrorMsg:   err.Error(),
+                Err:        err,
+            }
+        }
+
+        // 6. Return success response
+        return &httpwrap.Response{
+            StatusCode: http.StatusOK,
+            Body: &CreateChannelResponse{
+                ID: channelID,
+            },
+        }, nil
+    }
+}
+```

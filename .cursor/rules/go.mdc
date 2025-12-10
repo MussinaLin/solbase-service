@@ -1,0 +1,774 @@
+---
+glob: "**/*.go"
+alwaysApply: true
+---
+
+
+# Go Style Guide - Cursor Rules
+
+You are an expert Go developer following industry-standard Go style guides (Uber + Google). Apply these rules consistently across all Go code.
+
+## ⚠️ MANDATORY COMPLIANCE
+
+**ALL RULES IN THIS GUIDE ARE MANDATORY AND MUST BE FOLLOWED WITHOUT EXCEPTION.**
+
+This is not a suggestion document - these are requirements that must be adhered to for every Go file you create or modify. Failure to follow these rules is considered incorrect implementation.
+
+## Core Principles
+
+1. **Clarity** > cleverness: Code should be easy to understand
+2. **Simplicity** > sophistication: Use the simplest tool that works
+3. **Concision**: High signal-to-noise ratio
+4. **Maintainability**: Easy for future programmers to modify
+5. **Consistency**: Follow established patterns
+
+## Project Structure
+
+```
+agency/
+  ├── cmd/                    # Application entry points
+  │   ├── api/                # Main API server
+  │   ├── migration/          # Database migration runner
+  │   └── worker/             # Background worker
+  ├── config/                 # Environment configurations
+  │   ├── base.yaml
+  │   ├── local.yaml
+  │   ├── production.yaml
+  │   └── staging.yaml
+  ├── database/               # Database-related files
+  │   ├── migrations/         # SQL migrations (timestamped)
+  │   ├── queries/            # SQL query files for sqlc
+  │   ├── seeds/              # Seed data
+  │   └── sqlc.yml            # sqlc configuration
+  ├── internal/               # Core application logic
+  │   ├── api/                # Main API setup and routing
+  │   ├── config/             # Config loading package
+  │   ├── db/                 # Generated sqlc code
+  │   ├── httpwrap/           # HTTP response helpers
+  │   ├── otel/               # OpenTelemetry setup
+  │   ├── storage/            # Database/Redis connections
+  │   └── {domain}/           # Domain packages (trade, channel, user, etc.)
+  │       ├── {domain}.go        # Domain models, types, interfaces
+  │       ├── errors.go       # Domain-specific errors
+  │       ├── service/        # Business logic layer
+  │       │   ├── service.go
+  │       │   └── *.go
+  │       ├── repository/     # Data access layer
+  │       │   ├── repository.go  # Repository interface
+  │       │   ├── errors.go
+  │       │   └── sqlc/       # SQLC implementation
+  │       ├── api/            # Presentation layer
+  │       │   ├── api.go      # AddRoutes + shared DTOs
+  │       │   └── *.go        # Handler functions
+  │       └── mocks/          # Generated mocks
+  ├── Makefile                # Common development commands
+  ├── .golangci.yml           # Linter configuration
+  ├── lefthook.yml            # Git hooks
+  └── docker-compose.yaml     # Local development setup
+```
+
+## Domain-Driven Design (DDD)
+
+### Layer Architecture
+- **API** → **Service** → **Repository** → **Domain**
+- **Domain** (center) ← depends on nothing external
+- Use dependency injection to wire layers
+
+### Domain Root (domain.go)
+Define domain entities, value objects, aggregates, service interfaces, request/response types, and domain constants. No external dependencies.
+
+```go
+package trade
+
+type Service interface {
+    Quote(ctx context.Context, params *QuoteParams) (*Quote, error)
+}
+
+type QuoteParams struct {
+    PublicKey   string
+    InputMint   string
+    OutputMint  string
+    Amount      uint64
+}
+
+type Quote struct {
+    Address      string
+    InputMint   string
+    OutputMint  string
+    Amount      uint64
+}
+```
+
+### Domain Errors (errors.go)
+Define domain-specific error variables and types with descriptive names.
+
+```go
+package trade
+
+import "errors"
+
+var ErrNotFound = errors.New("not found")
+
+type SimulateTransactionError struct {
+    Message string
+}
+
+func (e *SimulateTransactionError) Error() string {
+    return e.Message
+}
+```
+
+### Service Layer (service/)
+Implement business logic and use cases. Depend on repository interfaces, orchestrate operations, handle business rules and validations, return domain errors.
+
+```go
+package service
+
+type Service struct {
+    repo trade.Repository
+}
+
+func New(repo trade.Repository) *Service {
+    return &Service{
+        repo: repo,
+    }
+}
+
+func (s *Service) Quote(ctx context.Context, params *trade.QuoteParams) (*trade.Quote, error) {
+    // Business logic here
+    return &trade.Quote{}, nil
+}
+```
+
+### Repository Layer (repository/)
+Define repository interface, implement data access logic, abstract database/storage details. Use `//go:generate` for mocks.
+
+```go
+package repository
+
+//go:generate mockgen -source=repository.go -destination=../mocks/repository.go -package=mocks
+type Repository interface {
+    GetOrder(ctx context.Context, id uuid.UUID) (*trade.Order, error)
+    CreateOrder(ctx context.Context, order *trade.Order) error
+    ListOrders(ctx context.Context, userID string) ([]*trade.Order, error)
+}
+```
+
+### API Layer (api/)
+HTTP handlers with request validation. Convert between HTTP DTOs and domain models. Handle HTTP-specific concerns. Thin layer that delegates to service.
+
+**For complete API implementation patterns, see `@api.mdc`**
+
+**Key Patterns:**
+- Use factory functions that return `httpwrap.HandlerFunc`
+- Define `AddRoutes` function to register all endpoints
+- Use exported request/response struct names with proper suffixes (e.g., `CreateResourceRequest`, `ResourceResponse`)
+- Use httpwrap.Handler wrapper for route registration
+- Use httpwrap helpers for standardized responses
+- Early return pattern for all error cases
+- Extract context: `ctx := r.Context()`
+
+```go
+package api
+
+func AddRoutes(r chi.Router, svc trade.Service) {
+    r.Post("/trades/quote", httpwrap.Handler(quote(svc)))
+}
+
+type QuoteRequest struct {
+    PublicKey  string `json:"public_key"`
+    InputMint  string `json:"input_mint"`
+    OutputMint string `json:"output_mint"`
+    Amount     string `json:"amount"`
+}
+
+type QuoteResponse struct {
+    QuoteID     uuid.UUID `json:"quote_id"`
+    InputMint   string    `json:"input_mint"`
+    OutputMint  string    `json:"output_mint"`
+    Transaction string    `json:"transaction"`
+}
+
+func quote(svc trade.Service) httpwrap.HandlerFunc {
+    return func(r *http.Request) (*httpwrap.Response, *httpwrap.ErrorResponse) {
+        var req QuoteRequest
+        
+        if errResp := httpwrap.BindBody(r, &req); errResp != nil {
+            return nil, errResp
+        }
+        
+        ctx := r.Context()
+        
+        quote, err := svc.Quote(ctx, &trade.QuoteParams{
+            PublicKey:  req.PublicKey,
+            InputMint:  req.InputMint,
+            OutputMint: req.OutputMint,
+        })
+        if err != nil {
+            return nil, &httpwrap.ErrorResponse{
+                StatusCode: http.StatusInternalServerError,
+                ErrorMsg:   err.Error(),
+                Err:        err,
+            }
+        }
+        
+        return &httpwrap.Response{
+            StatusCode: http.StatusOK,
+            Body: &QuoteResponse{
+                QuoteID:     quote.ID,
+                InputMint:   quote.InputMint,
+                OutputMint:  quote.OutputMint,
+                Transaction: quote.Transaction,
+            },
+        }, nil
+    }
+}
+```
+
+### File Organization Rules
+1. **One concept per file**: Split large services into feature-specific files (`service/position.go`, `service/swap.go`, `service/token.go`)
+2. **Interfaces at boundaries**: Define interfaces where layers meet
+3. **Mocks in separate package**: Generated mocks go in `mocks/` directory
+4. **Tests alongside implementation**: `service/position.go` → `service/position_test.go`
+
+## Additional Project Components
+
+### cmd/ - Application Entry Points
+- Each subdirectory is a separate executable
+- Keep main.go minimal - delegate to internal packages
+- Handle signal interrupts for graceful shutdown
+- Use `run()` pattern:
+```go
+func main() {
+    if err := run(); err != nil {
+        log.Fatal(err)
+    }
+}
+```
+
+### database/ - Database Management
+- **migrations/**: Format `YYYYMMDDHHMMSS_description.up.sql` and `.down.sql`
+- **queries/**: SQL query files for sqlc generation
+- **seeds/**: Seed data organized by environment
+- **sqlc.yml**: Generate into `internal/db`, use `pgx/v5`, configure type overrides
+
+### internal/api/ - Main API Package
+- `api.go`: Server initialization and dependency injection
+- `route.go`: Central routing with AddRoutes function
+- `middleware/`: HTTP middlewares (auth, request ID, etc.)
+
+## Imports
+- Use import aliases only when:
+  - Package name doesn't match last element of import path
+  - Direct conflict between imports
+
+## Naming
+
+**Casing:**
+- Use `MixedCaps` or `mixedCaps` (camel case), never `snake_case`
+- Exported: `MaxLength` not `MAX_LENGTH`
+- Unexported: `maxLength` not `max_length`
+
+**Packages:**
+- Lowercase, no underscores, short, not plural
+- Avoid: "common", "util", "shared", "lib"
+
+**Functions - Avoid Repetition:**
+```go
+// Bad: Repeats package name
+package yamlconfig
+func ParseYAMLConfig(input string) (*Config, error)
+
+// Good: Context makes it clear
+package yamlconfig
+func Parse(input string) (*Config, error)
+
+// Bad: Repeats receiver name
+func (c *Config) WriteConfigTo(w io.Writer) (int64, error)
+
+// Good: Receiver provides context
+func (c *Config) WriteTo(w io.Writer) (int64, error)
+
+// Bad: Repeats parameter names
+func OverrideFirstWithSecond(dest, source *Config) error
+
+// Good: Parameters are self-documenting
+func Override(dest, source *Config) error
+```
+
+**Function Naming Conventions:**
+- Functions that **return** something: use noun-like names (`JobName()`)
+- Functions that **do** something: use verb-like names (`WriteDetail()`)
+- Avoid `Get` prefix: `JobName()` not `GetJobName()`
+- Identical functions differing by type: include type at end (`ParseInt`, `ParseInt64`)
+
+**Variables:**
+- Unexported globals: prefix with `_` (e.g., `_defaultPort`)
+- Exception: unexported errors use `err` prefix without underscore
+- Local variables can be short when context is clear
+
+## Variables & Declarations
+
+**Top-level:**
+```go
+var s = F()  // Good
+var s string = F()  // Bad if F() returns string
+```
+
+**Local:**
+```go
+s := "foo"  // Good
+var s = "foo"  // Bad
+```
+
+**Zero values:**
+```go
+var filtered []int  // Good
+filtered := []int{}  // Bad
+```
+
+**Grouping:**
+- Group similar declarations using parentheses
+- Only group related declarations
+
+## Constants
+
+**Avoid Magic Numbers and Strings:**
+- Don't use magic numbers or strings directly in code
+- Define constants with meaningful names and prefixes
+
+```go
+// Good: Grouped constants with clear prefixes
+const (
+    // HTTP status codes
+    StatusCodeOK           = 200
+    StatusCodeBadRequest   = 400
+    StatusCodeNotFound     = 404
+)
+
+const (
+    // Timeout configurations
+    TimeoutHTTP      = 30 * time.Second
+    TimeoutDatabase  = 10 * time.Second
+    TimeoutCache     = 5 * time.Second
+)
+```
+
+## Interfaces & Types
+
+- Pass interfaces as values, not pointers
+- Verify compliance: `var _ http.Handler = (*Handler)(nil)` should place after the type definitione
+- Value receivers: callable on pointers and values
+- Pointer receivers: only on pointers or addressable values
+- `sync.Mutex`: use zero value `var mu sync.Mutex`
+- Never embed mutexes; use named field instead
+
+### Interface Design for External Dependencies
+
+**Create interfaces for external dependencies to improve testability:**
+- Define interfaces for external clients (APIs, databases, etc.)
+- Use dependency injection to pass interfaces to services
+- Place interface definitions in the same file as the concrete implementation
+- Use `//go:generate` directive for mock generation
+
+```go
+// Good: Interface for external dependency
+//go:generate mockgen -source=birdeye.go -destination=mocks/client.go -package=mocks
+type Client interface {
+    GetToken(ctx context.Context, address string) (*Token, error)
+    GetBalance(ctx context.Context, wallet string) (*Balance, error)
+}
+
+type Cli struct {
+    host  string
+    token string
+    httpC *http.Client
+}
+
+// Ensure Cli implements Client
+var _ Client = (*Cli)(nil)
+
+func NewClient(token string) *Cli {
+    return &Cli{
+        host:  "https://api.example.com",
+        token: token,
+        httpC: http.DefaultClient,
+    }
+}
+```
+
+## Error Handling
+
+**Error Types:**
+```go
+// Static errors
+var ErrNotFound = errors.New("not found")
+
+// Dynamic errors
+type NotFoundError struct { File string }
+
+// Simple errors
+errors.New("connection failed")
+fmt.Errorf("invalid config: %v", err)
+```
+
+**Error Wrapping:**
+```go
+// Good: Concise
+return fmt.Errorf("new store: %w", err)
+
+// Bad: Verbose "failed to"
+return fmt.Errorf("failed to create new store: %w", err)
+```
+
+**Error Naming:**
+- Exported: `Err` prefix (`ErrBrokenLink`)
+- Unexported: `err` prefix (`errNotFound`)
+- Custom types: `Error` suffix (`NotFoundError`)
+
+**Error Handling:**
+- Use `%w` to wrap errors when callers need underlying error
+- Use `%v` to obfuscate underlying error
+- Handle errors once: wrap and return OR log and degrade
+- Type assertions: always use "comma ok" idiom
+- Always wrap errors from external calls for better context
+- Provide meaningful error context without being verbose
+- **Use simple error variable names**: Always use `err` instead of descriptive names like `taskErr`, `enqueueErr`, etc.
+
+```go
+// Good: Wrap external errors with context
+err := s.client.Close()
+if err != nil {
+    return fmt.Errorf("close asynq client: %w", err)
+}
+
+// Good: Type assertion with comma ok
+t, ok := i.(string)
+if !ok {
+    // handle error
+}
+
+// Good: Simple error variable names
+task, err := NewFetchTokenTask(chain, address, frames)
+if err != nil {
+    return fmt.Errorf("create task: %w", err)
+}
+
+_, err = client.EnqueueContext(ctx, task, asynq.Unique(TTL))
+if err != nil {
+    return fmt.Errorf("enqueue task: %w", err)
+}
+
+// Bad: Unwrapped error
+return s.client.Close()
+
+// Bad: Verbose error message
+return fmt.Errorf("failed to close the asynq client connection: %w", err)
+
+// Bad: Weird error variable names
+task, taskErr := NewFetchTokenTask(chain, address, frames)
+if taskErr != nil {
+    return fmt.Errorf("create task: %w", taskErr)
+}
+```
+
+## Context Handling
+
+**Context-Aware Methods:**
+- Always prefer methods that accept context when available
+- Use context-aware versions of methods (e.g., `EnqueueContext` instead of `Enqueue`)
+- Pass context through the entire call chain
+- Use context for cancellation, timeouts, and request tracing
+
+```go
+// Good: Use context-aware methods
+_, err = client.EnqueueContext(ctx, task, asynq.Unique(TTL))
+if err != nil {
+    return fmt.Errorf("enqueue task: %w", err)
+}
+
+// Good: Pass context through call chain
+func (s *Service) ProcessData(ctx context.Context, data *Data) error {
+    return s.repo.SaveContext(ctx, data)
+}
+
+// Bad: Non-context method when context version exists
+_, err = client.Enqueue(task, asynq.Unique(TTL))
+
+// Bad: Ignoring context parameter
+func (s *Service) ProcessData(_ context.Context, data *Data) error {
+    return s.repo.Save(data) // Should use SaveContext
+}
+```
+
+## Panics & Exits
+
+- Only panic for truly irrecoverable situations
+- `os.Exit` or `log.Fatal*` **only in `main()`**
+- All other functions should return errors
+- Use `run()` pattern for single exit point
+- In tests: prefer `t.Fatal` or `t.FailNow`
+
+## Concurrency
+
+- Never fire-and-forget goroutines
+- Every goroutine must have either:
+  - A predictable stop time, OR
+  - A way to signal it to stop (e.g., context, channel)
+- Use `sync.WaitGroup` for multiple goroutines
+- Use `chan struct{}` for single goroutine completion signaling
+
+## Memory & Performance
+
+**Copy at Boundaries:**
+```go
+func (d *Driver) SetTrips(trips []Trip) {
+    d.trips = make([]Trip, len(trips))
+    copy(d.trips, trips)
+}
+```
+
+**Container Capacity:**
+```go
+make(map[T1]T2, hint)
+make([]T, length, capacity)
+```
+
+**Performance Tips:**
+- Prefer `strconv` over `fmt` for primitive conversions
+- Avoid repeated string-to-byte conversions in loops
+- Cache byte slice conversions outside loops
+
+## Least Mechanism
+
+When multiple ways exist to express the same idea, prefer in order:
+
+1. Core language construct (channel, slice, map, loop, struct)
+2. Standard library tool (HTTP client, template engine)
+3. Core internal library
+4. New dependency or custom solution
+
+Examples:
+- Use `map[string]bool` for set membership unless complex operations needed
+- Avoid sophisticated machinery without reason
+- Easy to add complexity later; hard to remove existing complexity
+
+## Structs
+
+**Initialization:**
+```go
+// Use field names (enforced by go vet)
+user := User{
+    Name: "John",
+    Age:  30,
+}
+
+// Zero value
+var user User  // Good
+user := User{}  // Bad
+
+// Struct references
+&T{}  // Good
+new(T)  // Bad
+```
+
+**Embedding:**
+- Embedded types go at top of struct with blank line separator
+- Never embed mutexes, even in unexported types
+- Only embed when it provides tangible benefit
+- Avoid embedding types in public structs
+
+## Maps & Slices
+
+**Maps:**
+```go
+make(map[T1]T2)  // Good: Empty maps
+map[T1]T2{}      // Bad
+
+make(map[T1]T2, hint)  // Good: Provide capacity hints
+```
+
+**Slices:**
+- `nil` is a valid slice of length 0
+- Return `nil` instead of `[]T{}`
+- Check emptiness: `len(s) == 0`, not `s == nil`
+- Zero value slice is usable without `make()`
+
+## Globals & Package State
+
+**Avoid Mutable Globals:**
+- Use dependency injection instead
+- Package state creates test, configuration, and concurrency issues
+
+**Package State Problems:**
+- Order-dependent test cases
+- Difficult to use different configurations in same process
+- Hard to replace implementations in tests
+- Unclear initialization timing
+- Concurrent access issues
+
+**Forms of Problematic State:**
+```go
+// Bad: Top-level mutable variables
+package logger
+var Sinks []Sink
+
+// Bad: Service locator pattern
+package registry
+var services = make(map[string]Service)
+
+// Bad: Thick-client singletons
+package useradmin
+var client pb.UserAdminServiceClient
+```
+
+**Safe Package State:**
+Only when:
+- The global state is logically constant
+- The package's observable behavior is stateless
+- The global state doesn't interact with external systems
+
+```go
+// Good: Stateless, idempotent
+package image
+func RegisterFormat(name, magic string, decode func(io.Reader) (Image, error))
+```
+
+## Code Structure
+
+- Use `defer` for cleanup (locks, files, etc.)
+- Reduce nesting: handle errors early, return/continue early
+- Avoid unnecessary else:
+```go
+a := 10
+if b {
+    a = 100
+}
+```
+- Order functions by call order
+- Group functions by receiver
+- Struct definitions first, then `newXYZ()`, then methods, then utility functions
+
+**Cognitive Complexity Management:**
+- Break down complex functions into smaller, focused helper functions
+- Extract repetitive logic into reusable methods
+- Use descriptive function names that explain the purpose
+- Keep main functions focused on orchestration, not implementation details
+
+```go
+// Good: Complex function broken into helpers
+func (h *Handler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+    payload, err := h.parsePayload(t)
+    if err != nil {
+        return err
+    }
+    
+    return h.processWalletTrades(ctx, payload)
+}
+
+func (h *Handler) processWalletTrades(ctx context.Context, payload *Payload) error {
+    // Implementation details
+}
+
+// Bad: Everything in one complex function
+func (h *Handler) ProcessTask(ctx context.Context, t *asynq.Task) error {
+    // 100+ lines of complex logic
+}
+```
+
+## Channels & Enums
+
+**Channels:**
+- Channel size should be 1 or 0 (unbuffered)
+- Any other size requires high scrutiny and documentation
+
+**Enums:**
+```go
+const (
+    Add Operation = iota + 1  // Start at 1
+    Subtract
+    Multiply
+)
+```
+
+## Time Handling
+
+- Always use `time.Time` for instants of time
+- Always use `time.Duration` for periods of time
+- Use `time.Time` methods for comparison, addition, subtraction
+- Include unit in field name when using `int`/`float64`: `IntervalMillis`
+
+## Logging
+
+**Structured Logging with slog:**
+- Always use `InfoContext`, `ErrorContext`, etc. instead of `Info`, `Error`
+- Pass context as first parameter to logging functions
+- Use structured fields for better observability
+- Include relevant identifiers (task_id, user_id, etc.)
+
+```go
+// Good: Context-aware logging
+logger.InfoContext(ctx, "processing task", 
+    slog.String("task_id", taskID),
+    slog.String("user_id", userID))
+
+// Bad: Non-context logging
+logger.Info("processing task", slog.String("task_id", taskID))
+```
+
+## Linting and Code Quality
+
+**MANDATORY: Always Run After Making Any Code Changes**
+
+After editing any Go files, you MUST run these commands in order:
+
+1. **`make sqlc`** - Generate SQL code from queries (REQUIRED when SQL queries change)
+2. **`make gci-format`** - Format imports (REQUIRED)
+3. **`make lint`** - Run static analysis and fix all issues (REQUIRED)
+4. **`make test`** - Run tests with race detection (REQUIRED)
+
+These checks are NOT optional. You must:
+- Run `make sqlc` ONLY when you modify SQL queries in `database/queries/`
+- Run all other commands after making any Go code changes
+- Fix any errors or warnings that appear
+- Verify all checks pass before considering the task complete
+
+**Handling Linter Warnings:**
+- Fix all linting issues when possible
+- For unavoidable issues, use `//nolint` comments only with explicit approval
+- Document why nolint is necessary
+- Prefer code changes over nolint when feasible
+- **Never use nolint comments without asking first**
+
+```go
+// Good: Fix the issue
+func (s *Server) shutdown() error {
+    if s.server != nil {
+        s.server.Shutdown()
+    }
+    return nil
+}
+
+// Acceptable with approval: Documented nolint
+func (s *Server) shutdown() error { //nolint:unparam // shutdown always returns nil by design
+    s.server.Shutdown()
+    return nil
+}
+```
+
+### Code Formatting Rules
+
+**Whitespace and Formatting:**
+- Add blank line above `return` statements for better readability
+- Use proper spacing around operators and keywords
+- Group related declarations with blank line separators
+
+**Lambda Expression Simplification:**
+- Simplify lambda expressions when possible
+- Prefer direct function references over lambda wrappers
+
+## Built-in Names & Init
+
+- Never shadow built-in names (error, string, int, etc.)
+- Keep code grep-friendly
+- Do not use `init()` 

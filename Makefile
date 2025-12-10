@@ -6,11 +6,11 @@ help: ## Display this help message
 
 build: ## Build the application
 	@echo "Building application..."
-	go build -o bin/server ./cmd/server
+	go build -o bin/server ./cmd/api
 
 run: ## Run the application
 	@echo "Running application..."
-	go run ./cmd/server/main.go
+	go run ./cmd/api/main.go
 
 dev: ## Run with hot reload (requires air)
 	@echo "Running with hot reload..."
@@ -63,21 +63,25 @@ install-tools: ## Install development tools
 # Database migrations (using goose)
 migrate-up: ## Run all pending migrations
 	@echo "Running migrations..."
-	goose -dir db/migrations postgres "$(DATABASE_URL)" up
+	goose -dir database/migrations postgres "$(DATABASE_URL)" up
 
 migrate-down: ## Rollback the last migration
 	@echo "Rolling back last migration..."
-	goose -dir db/migrations postgres "$(DATABASE_URL)" down
+	goose -dir database/migrations postgres "$(DATABASE_URL)" down
 
 migrate-status: ## Show migration status
 	@echo "Migration status..."
-	goose -dir db/migrations postgres "$(DATABASE_URL)" status
+	goose -dir database/migrations postgres "$(DATABASE_URL)" status
 
 migrate-create: ## Create a new migration (usage: make migrate-create name=migration_name)
 	@echo "Creating migration $(name)..."
-	goose -dir db/migrations create $(name) sql
+	goose -dir database/migrations create $(name) sql
 
 migrate-reset: ## Reset all migrations (down then up)
 	@echo "Resetting all migrations..."
-	goose -dir db/migrations postgres "$(DATABASE_URL)" reset
-	goose -dir db/migrations postgres "$(DATABASE_URL)" up
+	goose -dir database/migrations postgres "$(DATABASE_URL)" reset
+	goose -dir database/migrations postgres "$(DATABASE_URL)" up
+
+sqlc: ## Generate sqlc code
+	@echo "Generating sqlc code..."
+	cd database && sqlc generate

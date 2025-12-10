@@ -1,0 +1,872 @@
+---
+glob: "**/*_test.go"
+alwaysApply: true
+---
+
+# Go Testing Best Practices - Cursor Rules
+
+You are an expert in writing high-quality Go tests. Apply these rules consistently for all test code.
+
+## ⚠️ MANDATORY COMPLIANCE
+
+**ALL RULES IN THIS GUIDE ARE MANDATORY AND MUST BE FOLLOWED WITHOUT EXCEPTION.**
+
+This is not a suggestion document - these are requirements that must be adhered to for every test file you create or modify. Failure to follow these rules is considered incorrect implementation.
+
+## Test File Structure
+
+### Package Declaration
+- Use `//nolint:testpackage` when testing internal/unexported functions
+- Otherwise, use separate `_test` package for black-box testing
+```go
+package service //nolint:testpackage // for test internal function
+```
+
+### TestMain for Setup and Cleanup
+- Always include TestMain for goroutine leak detection
+- Use flag for optional leak checking to allow flexibility
+- Exit with the test result code
+```go
+func TestMain(m *testing.M) {
+	leak := flag.Bool("leak", true, "enable goleak checks")
+	flag.Parse()
+
+	code := m.Run()
+
+	if *leak {
+		err := goleak.Find()
+		if err != nil {
+			log.Fatalf("goleak detected leaks: %v", err)
+		}
+	}
+
+	os.Exit(code)
+}
+```
+
+## Table-Driven Tests
+
+### Test Structure
+- Always use table-driven tests for functions with multiple test cases
+- Use parallel execution at both test and subtest level
+- Name the test slice `tests` and iteration variable `tt`
+```go
+func TestFunctionName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		// input fields
+		want    expectedType
+		wantErr bool
+	}{
+		// test cases
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// test logic
+		})
+	}
+}
+```
+
+### Test Case Naming
+Follow this naming convention:
+- **`"success"`** - For normal successful case (the happy path)
+- **`"success - description"`** - For successful cases other than the normal case
+- **`"error - description"`** - For error cases, where description is:
+  - The error that will be returned by the function, OR
+  - A clear, short explanation of what we're testing
+
+**Examples:**
+```go
+// Good: Clear and concise
+"success"
+"success - with cache hit"
+"success - with empty wallet"
+"error - wallet not found"
+"error - insufficient balance"
+"error - invalid public key"
+```
+
+### Test Fields
+- Use clear, consistent field naming:
+  - `name` - description of the test case
+  - Input fields - named after function parameters or clear descriptions
+  - `want` - expected output
+  - `wantErr` - whether an error is expected
+- For complex inputs, use descriptive names like `userTrades`, `params`, etc.
+
+## Testing with Mocks (go.uber.org/mock)
+
+### Mock Setup Pattern
+- Define a `setupRepo` (or similar) function field in test struct
+- Create mocks inside the setup function with proper expectations
+- Return the configured mock from setup function
+- **Use specific matchers for verifiable parameters**
+```go
+tests := []struct {
+	name      string
+	setupRepo func(ctrl *gomock.Controller) *mocks.MockRepository
+	params    *channel.Params
+	want      *channel.Result
+	wantErr   bool
+}{
+	{
+		name: "success",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			
+			// Good: Use Any() only for context, check other parameters
+			repo.EXPECT().
+				MethodName(gomock.Any(), "expected-id").
+				Return(expectedResult, nil)
+			
+			return repo
+		},
+		params: &channel.Params{...},
+		want:   &channel.Result{...},
+	},
+}
+```
+
+### Mock Controller
+- Create gomock.Controller inside each subtest
+- Pass controller to setup function
+```go
+for _, tt := range tests {
+	t.Run(tt.name, func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		
+		service := New(tt.setupRepo(ctrl), nil, nil)
+		got, err := service.Method(t.Context(), tt.params)
+		// assertions
+	})
+}
+```
+
+### gomock Matchers
+Use matchers to specify expected arguments. **Prefer specific matchers over gomock.Any()** to make tests more robust.
+
+**General Rule:**
+- Use `gomock.Any()` ONLY for values that cannot be verified (e.g., `context.Context`)
+- For simple equality, pass values directly
+- Use custom matchers for complex validation logic
+- Be as specific as possible to catch unexpected behavior
+
+**Any/Equal Matchers:**
+```go
+// Good: Only use Any() for context
+repo.EXPECT().
+	GetUser(gomock.Any(), "user-123").
+	Return(&User{ID: "user-123"}, nil)
+
+// Bad: Using Any() for verifiable parameter
+repo.EXPECT().
+	GetUser(gomock.Any(), gomock.Any()).  // Should check user ID!
+	Return(&User{}, nil)
+```
+
+**Type Matchers:**
+```go
+repo.EXPECT().
+	CreateUser(gomock.Any(), gomock.AssignableToTypeOf(&User{})).
+	Return(nil)
+```
+
+**Nil Matchers:**
+```go
+repo.EXPECT().
+	Process(gomock.Any(), gomock.Nil()).
+	Return(nil)
+
+repo.EXPECT().
+	Process(gomock.Any(), gomock.Not(gomock.Nil())).
+	Return(nil)
+```
+
+**Custom Matchers:**
+```go
+// Custom matcher for UUID validation
+uuidMatcher := gomock.Cond(func(x interface{}) bool {
+	id, ok := x.(uuid.UUID)
+	return ok && id != uuid.Nil
+})
+
+repo.EXPECT().
+	GetChannel(gomock.Any(), uuidMatcher, uuidMatcher).
+	Return(&channel.Channel{}, nil)
+```
+
+**When to Use gomock.Any():**
+
+✅ **Use gomock.Any() for:**
+- `context.Context` - Usually not verifiable in tests
+- Timestamps/time values that are generated dynamically
+- System-generated values (UUIDs if generated in function)
+- Values that are irrelevant to the test scenario
+
+### Call Modifiers
+
+**Return Values:**
+```go
+// Single return
+m.EXPECT().GetCount().Return(5)
+
+// Multiple returns (value + error)
+m.EXPECT().GetUser(gomock.Any()).Return(&User{}, nil)
+m.EXPECT().GetUser(gomock.Any()).Return(nil, ErrNotFound)
+```
+
+**Call Frequency:**
+```go
+// Exactly once (default)
+m.EXPECT().Method()
+
+// Any number of times
+m.EXPECT().Method().AnyTimes()
+
+// Specific number of times
+m.EXPECT().Method().Times(3)
+
+// At least/most
+m.EXPECT().Method().MinTimes(1)
+m.EXPECT().Method().MaxTimes(5)
+```
+
+**Do/DoAndReturn for Side Effects:**
+```go
+// Execute function without return value
+m.EXPECT().
+	Process(gomock.Any(), gomock.Any()).
+	Do(func(ctx context.Context, data *Data) {
+		// side effect logic
+		data.Processed = true
+	})
+
+// Execute function and return its result
+m.EXPECT().
+	Calculate(10).
+	DoAndReturn(func(x int) (int, error) {
+		return x * 2, nil
+	})
+```
+
+**Call Order:**
+```go
+// Enforce call order with InOrder
+gomock.InOrder(
+	m.EXPECT().First().Return(nil),
+	m.EXPECT().Second().Return(nil),
+	m.EXPECT().Third().Return(nil),
+)
+```
+
+### Multiple Mock Setup
+When testing with multiple dependencies:
+```go
+tests := []struct {
+	name      string
+	setupRepo func(ctrl *gomock.Controller) *mocks.MockRepository
+	setupAPI  func(ctrl *gomock.Controller) *mocks.MockAPIClient
+	want      *Result
+	wantErr   bool
+}{
+	{
+		name: "with_multiple_mocks",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			// Good: Check specific parameters (no Eq() needed for simple values)
+			repo.EXPECT().
+				GetData(gomock.Any(), "data-123").
+				Return(&Data{ID: "data-123"}, nil)
+			return repo
+		},
+		setupAPI: func(ctrl *gomock.Controller) *mocks.MockAPIClient {
+			api := mocks.NewMockAPIClient(ctrl)
+			// Good: Verify the exact URL being fetched
+			api.EXPECT().
+				Fetch(gomock.Any(), "https://api.example.com/data").
+				Return(&Response{Status: "ok"}, nil)
+			return api
+		},
+		want: &Result{Success: true},
+	},
+}
+
+for _, tt := range tests {
+	t.Run(tt.name, func(t *testing.T) {
+		t.Parallel()
+		
+		ctrl := gomock.NewController(t)
+		service := New(tt.setupRepo(ctrl), tt.setupAPI(ctrl))
+		
+		got, err := service.Process(t.Context())
+		// assertions
+	})
+}
+```
+
+### Mock Best Practices
+1. **Check parameters whenever possible** - Use specific matchers (gomock.Eq(), custom matchers)
+2. **Use gomock.Any() only when value cannot be confirmed** - e.g., context.Context, timestamps
+3. **Be explicit with important arguments** - Avoid gomock.Any() for business logic parameters
+4. **Set up expectations before calling** the system under test
+5. **One mock setup per test case** - keep expectations localized
+6. **Use DoAndReturn for complex logic** that needs to inspect arguments
+7. **Avoid excessive mocking** - test real implementations when reasonable
+8. **Simplify lambda expressions** - Use direct function references when possible
+
+**Good Example:**
+```go
+// Good: Check specific parameters (simple values don't need Eq())
+repo.EXPECT().
+    GetUser(gomock.Any(), "user-123").  // context.Any(), but specific user ID
+    Return(&User{ID: "user-123"}, nil)
+
+// Good: Use custom matchers for validation
+uuidMatcher := gomock.Cond(func(x interface{}) bool {
+    id, ok := x.(uuid.UUID)
+    return ok && id != uuid.Nil
+})
+repo.EXPECT().
+    CreateChannel(gomock.Any(), uuidMatcher, "channel-name").
+    Return(nil)
+
+// Good: Simplified lambda expression
+setupRepo: mocks.NewMockRepository
+```
+
+**Bad Example:**
+```go
+// Bad: Using Any() for everything
+repo.EXPECT().
+    GetUser(gomock.Any(), gomock.Any()).  // Should check user ID!
+    Return(&User{}, nil)
+
+// Bad: Unnecessary lambda wrapper
+setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+    return mocks.NewMockRepository(ctrl)
+}
+```
+
+## Constants and Test Data
+
+### Define Constants at Test Level
+- Define reusable test constants at the top of the test function
+- Use meaningful names that reflect real-world values
+```go
+func TestService_Method(t *testing.T) {
+	t.Parallel()
+
+	// Real token addresses for testing
+	const (
+		solAddress  = "So11111111111111111111111111111111111111112"
+		bonkAddress = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+	)
+
+	baseTime := time.Unix(1700000000, 0) // 2023-11-14
+	
+	tests := []struct {
+		// ...
+	}
+}
+```
+
+## Error Handling in Tests
+
+### Checking for Errors
+- Always check both success and error cases
+- Handle expected errors gracefully with early return
+- Fail on unexpected errors with descriptive messages
+```go
+got, err := service.Method(t.Context(), tt.params)
+if err != nil {
+	if !tt.wantErr {
+		t.Errorf("Method() failed: %v", err)
+	}
+}
+```
+
+### Error Test Cases
+- Include test cases for various error scenarios
+- Test validation errors, not found errors, etc.
+- Use descriptive names like `"invalid_input"`, `"not_found_error"`
+
+### Verifying Specific Errors
+
+**When you need to verify a specific error type is returned:**
+- Add an `err error` field to the test struct
+- Set the expected error value in each error test case
+- Use `errors.Is()` with a nil check to verify the error type
+- Only check errors when `tt.err != nil` to handle success cases gracefully
+
+```go
+tests := []struct {
+	name      string
+	setupRepo func(ctrl *gomock.Controller) *mocks.MockRepository
+	params    *channel.Params
+	want      *channel.Result
+	wantErr   bool
+	err       error  // Expected error for verification
+}{
+	{
+		name: "success",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			repo.EXPECT().
+				GetChannel(gomock.Any(), id).
+				Return(&channel.Channel{}, nil)
+			return repo
+		},
+		params: &channel.Params{ID: id},
+		want:   &channel.Result{Success: true},
+		// err not set for success cases
+	},
+	{
+		name: "error - not found",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			repo.EXPECT().
+				GetChannel(gomock.Any(), id).
+				Return(nil, repository.ErrNotFound)
+			return repo
+		},
+		params:  &channel.Params{ID: id},
+		wantErr: true,
+		err:     channel.ErrNotFound,  // Set expected error
+	},
+	{
+		name: "error - repository fails",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			repo.EXPECT().
+				GetChannel(gomock.Any(), id).
+				Return(nil, errInternal)
+			return repo
+		},
+		params:  &channel.Params{ID: id},
+		wantErr: true,
+		err:     errInternal,  // Set expected error
+	},
+}
+
+for _, tt := range tests {
+	t.Run(tt.name, func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		service := New(tt.setupRepo(ctrl), nil, nil, nil)
+
+		got, err := service.GetChannel(t.Context(), tt.params)
+		if err != nil {
+			if !tt.wantErr {
+				t.Errorf("GetChannel() wantErr = %v, got = %v", tt.wantErr, err)
+			}
+
+			if  !errors.Is(err, tt.err) {
+				t.Errorf("GetChannel() error = %v, want %v", err, tt.err)
+			}
+		}
+
+		if !cmp.Equal(got, tt.want) {
+			t.Errorf("GetChannel() = %v, want %v, diff %v", got, tt.want, cmp.Diff(got, tt.want))
+		}
+	})
+}
+```
+
+**Key Points:**
+- **Use `errors.Is()` for error comparison** - Properly handles wrapped errors and error chains
+- **Set `err` field only in error test cases** - Success cases don't need the error field
+- **Remove redundant `if tt.wantErr` check after error** - Once we know there's an error and `wantErr` is true, we've validated the expectation
+
+**Example:**
+```go
+// Good: Generic error check using struct field
+if err != nil {
+	if !tt.wantErr {
+		t.Errorf("GetChannel() wantErr = %v, got = %v", tt.wantErr, err)
+	}
+
+	if  !errors.Is(err, tt.err) {
+		t.Errorf("GetChannel() error = %v, want %v", err, tt.err)
+	}
+}
+```
+
+### Static Error Variables in Tests
+
+**Use static error variables instead of dynamic error creation:**
+- Define static error variables at package level for test errors
+- Use the same error variable across all test methods in the same package
+- Avoid creating dynamic errors with `errors.New()` in test methods
+
+```go
+package service //nolint:testpackage // for test internal function
+
+import (
+	"errors"
+	"testing"
+	// ... other imports
+)
+
+// Static error variable for all test methods
+var errInternal = errors.New("internal error")
+
+func TestService_Method(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		setupRepo func(ctrl *gomock.Controller) *mocks.MockRepository
+		wantErr   bool
+	}{
+		{
+			name: "error - repository fails",
+			setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+				repo := mocks.NewMockRepository(ctrl)
+				repo.EXPECT().
+					Method(gomock.Any(), gomock.Any()).
+					Return(errInternal) // Use static error variable
+				return repo
+			},
+			wantErr: true,
+		},
+	}
+	// ... rest of test
+}
+```
+
+## Assertions and Comparisons
+
+### Use go-cmp for comparisons
+- Prefer `cmp.Equal` over `reflect.DeepEqual` for better error messages
+- Show detailed diff when comparison fails
+```go
+if !cmp.Equal(got, tt.want) {
+	t.Errorf("Method() = %v, want %v, diff %v", got, tt.want, cmp.Diff(got, tt.want))
+}
+```
+
+## Helper Functions
+
+### Test Helper Functions
+- Create helper functions for repetitive test setup
+- Use `must*` prefix for functions that panic on error (acceptable in tests)
+- Place helpers at the end of the test file
+```go
+func mustNewDecimalFromStr(value string) decimal.Decimal {
+	d, err := decimal.NewFromString(value)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
+```
+
+### Helper Function Guidelines
+- Helpers should be simple and focused
+- Panic is acceptable in test helpers for invalid test data
+- Don't use `t.Helper()` in non-assertion helpers
+
+## Test File Organization
+
+### Test File Structure
+- **One test file per source file** - Follow the pattern `source.go` → `source_test.go`
+- **Co-locate tests with source** - Keep tests close to the code they test
+- **Separate concerns** - Split large test files by functionality when they become unwieldy
+- **Single TestMain per package** - Only one `TestMain` function per package, typically in the main test file
+
+### File Naming Conventions
+```
+internal/
+  domain/
+    service.go           // Source file
+    service_test.go      // Main test file (contains TestMain)
+    repository.go        // Source file
+    repository_test.go   // Repository-specific tests
+    errors.go           // Source file
+    errors_test.go      // Error-specific tests
+```
+
+### When to Split Test Files
+Split test files when:
+- **Single file exceeds 500+ lines** - Becomes hard to navigate
+- **Testing different concerns** - Each file focuses on specific functionality
+- **Different test patterns** - Unit tests vs integration tests vs benchmarks
+- **Different dependencies** - Tests requiring different mock setups
+
+### TestMain Placement
+- **Place TestMain in the main test file** - Usually `package_test.go`
+- **Other test files omit TestMain** - Avoid duplicate TestMain declarations
+- **Shared setup/teardown** - TestMain handles package-level initialization
+
+```go
+// In main_test.go (e.g., service_test.go)
+func TestMain(m *testing.M) {
+	leak := flag.Bool("leak", true, "enable goleak checks")
+	flag.Parse()
+
+	code := m.Run()
+
+	if *leak {
+		err := goleak.Find()
+		if err != nil {
+			log.Fatalf("goleak detected leaks: %v", err)
+		}
+	}
+
+	os.Exit(code)
+}
+
+// In other_test.go files - NO TestMain
+package service //nolint:testpackage // for test internal function
+
+import (
+	"testing"
+	// ... other imports (no flag, log, os, goleak)
+)
+```
+
+### Import Organization in Split Files
+- **Main test file** - Include all imports (flag, log, os, goleak for TestMain)
+- **Split test files** - Import only what's needed for that specific functionality
+- **Avoid unused imports** - Each file should have minimal, focused imports
+
+### Benefits of Proper Organization
+- **Better maintainability** - Easier to find and modify specific tests
+- **Faster test execution** - Run only relevant tests during development
+- **Clearer separation of concerns** - Each file has a single responsibility
+- **Easier code reviews** - Smaller, focused files are easier to review
+- **Better IDE navigation** - Quick access to related tests
+
+## Test Organization
+
+### Test Case Order
+- Group related test cases together
+- Start with success cases
+- Progress to edge cases and error cases
+- Common order:
+  1. Empty/nil inputs
+  2. Single item cases
+  3. Multiple items cases
+  4. Edge cases
+  5. Error cases
+
+
+## Context Usage
+
+### Always Use t.Context()
+- Use `t.Context()` instead of `context.Background()` in tests
+- `t.Context()` is automatically canceled when test completes or times out
+- Helps prevent goroutine leaks and ensures proper cleanup
+- Pass context as first argument to service methods
+
+```go
+// Good: Use t.Context()
+got, err := s.calculateWalletPNL(t.Context(), tt.params)
+
+// Bad: Using context.Background()
+got, err := s.calculateWalletPNL(context.Background(), tt.params)
+```
+
+## Mock Generation with go.uber.org/mock
+
+### Generating Mocks with go:generate
+
+Add `//go:generate` directive above interface definitions:
+```go
+//go:generate mockgen -source=repository.go -destination=../mocks/repository.go -package=mocks
+type Repository interface {
+	CreateChannel(ctx context.Context, channel *channel.Channel) error
+	GetChannel(ctx context.Context, id, userID uuid.UUID) (*channel.Channel, error)
+	ListChannelsByUserID(ctx context.Context, userID uuid.UUID) ([]*channel.Channel, error)
+}
+```
+
+### mockgen Command Flags
+- `-source`: Source file containing interfaces to mock
+- `-destination`: Output file for generated mocks
+- `-package`: Package name for generated mocks (typically `mocks`)
+- `-mock_names`: Custom names for generated mocks (optional)
+- `-typed`: Generate type-safe Return/Do/DoAndReturn (recommended)
+
+### Mock File Organization
+```
+internal/
+  domain/
+    repository/
+      repository.go          // Interface with //go:generate
+      errors.go
+    mocks/
+      repository.go          // Generated mocks (gitignored or committed)
+    service/
+      service.go
+      service_test.go        // Uses mocks from ../mocks
+```
+
+### Generating Mocks
+Run from the directory containing the interface:
+```bash
+go generate ./...
+```
+
+Or for specific package:
+```bash
+go generate ./internal/domain/repository
+```
+
+### Alternative: Package Mode
+For external packages or when source is not available:
+```go
+//go:generate mockgen -destination=mocks/sql_mock.go -package=mocks database/sql/driver Conn,Driver
+```
+
+
+## Test Code Formatting
+
+### Lambda Expression Simplification
+- Simplify lambda expressions in test setup when possible
+- Prefer direct function references over lambda wrappers
+- Use simplified expressions for better readability
+
+```go
+// Good: Direct function reference
+setupRepo: mocks.NewMockRepository
+
+// Bad: Unnecessary lambda wrapper
+setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+	return mocks.NewMockRepository(ctrl)
+}
+```
+
+## Best Practices Summary
+
+1. **Always use table-driven tests** for functions with multiple scenarios
+2. **Always enable parallel execution** with `t.Parallel()`
+3. **Always check for goroutine leaks** with goleak in TestMain
+4. **Follow naming convention**: `"success"`, `"success - description"`, `"error - description"`
+5. **Always use cmp.Equal** for deep equality checks with diff output
+6. **Always test both success and error paths**
+7. **Use mocks via setup functions** in test struct for flexibility
+8. **Define constants** for reusable test data
+9. **Document complex logic** with inline comments
+10. **Keep test data inline** in test cases for clarity
+11. **Generate mocks with //go:generate** directive in interface files
+12. **Check mock parameters whenever possible** - Only use gomock.Any() for unverifiable values
+13. **Create gomock.Controller per subtest** for test isolation
+14. **Set mock expectations before** calling system under test
+15. **Use Makefile commands** (`make test`, `make lint`, `make coverage`) for consistency
+16. **Use static error variables** instead of dynamic error creation
+17. **Verify specific errors using `err` field** - Add `err error` to test struct and check with `errors.Is()` when `tt.err != nil`
+18. **Follow proper whitespace rules** for better code readability
+19. **Simplify lambda expressions** when possible for cleaner test code
+20. **Organize test files properly** - Split large files by functionality, co-locate with source
+21. **Single TestMain per package** - Place in main test file, omit from split files
+
+
+## Example Complete Test
+
+```go
+package service //nolint:testpackage // for test internal function
+
+import (
+	"context"
+	"flag"
+	"log"
+	"os"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"go.uber.org/goleak"
+	"go.uber.org/mock/gomock"
+
+	"agency/internal/domain"
+	"agency/internal/domain/mocks"
+)
+
+func TestMain(m *testing.M) {
+	leak := flag.Bool("leak", true, "enable goleak checks")
+	flag.Parse()
+
+	code := m.Run()
+
+	if *leak {
+		err := goleak.Find()
+		if err != nil {
+			log.Fatalf("goleak detected leaks: %v", err)
+		}
+	}
+
+	os.Exit(code)
+}
+
+func TestService_ProcessData(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		setupRepo func(ctrl *gomock.Controller) *mocks.MockRepository
+		input     *domain.Input
+		want      *domain.Output
+		wantErr   bool
+	}{
+	{
+		name: "success",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			// Good: Check specific parameter (test-id), use Any() only for context
+			repo.EXPECT().
+				GetData(gomock.Any(), "test-id").
+				Return(&domain.Data{ID: "test-id"}, nil)
+			return repo
+		},
+		input: &domain.Input{ID: "test-id"},
+		want:  &domain.Output{ID: "test-id", Status: "processed"},
+	},
+	{
+		name: "error - not found",
+		setupRepo: func(ctrl *gomock.Controller) *mocks.MockRepository {
+			repo := mocks.NewMockRepository(ctrl)
+			// Good: Verify the exact ID being requested
+			repo.EXPECT().
+				GetData(gomock.Any(), "missing-id").
+				Return(nil, domain.ErrNotFound)
+			return repo
+		},
+		input:   &domain.Input{ID: "missing-id"},
+		wantErr: true,
+	},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			service := New(tt.setupRepo(ctrl))
+
+			got, err := service.ProcessData(t.Context(), tt.input)
+			if err != nil {
+				if !tt.wantErr {
+					t.Errorf("ProcessData() failed: %v", err)
+				}
+			}
+
+			if tt.wantErr {
+				t.Fatal("ProcessData() succeeded unexpectedly")
+			}
+
+			if !cmp.Equal(got, tt.want) {
+				t.Errorf("ProcessData() = %v, want %v, diff %v", got, tt.want, cmp.Diff(got, tt.want))
+			}
+		})
+	}
+}
+```

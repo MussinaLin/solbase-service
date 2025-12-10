@@ -12,15 +12,16 @@ X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from mu
 # Run
 make run                      # Run the application
 make dev                      # Run with hot reload (requires air)
-go run ./cmd/server/main.go   # Run directly
+go run ./cmd/api/main.go      # Run directly
 
 # Build
 make build                    # Build binary to ./bin/server
-go build -o bin/server ./cmd/server
+go build -o bin/server ./cmd/api
 
 # Database
 docker-compose up -d          # Start PostgreSQL
-sqlc generate                 # Generate Go code from SQL
+make sqlc                     # Generate Go code from SQL (runs in database/)
+cd database && sqlc generate  # Alternative
 
 # Database Migrations (goose)
 make migrate-up               # Run all pending migrations
@@ -31,7 +32,7 @@ make migrate-create name=xxx  # Create a new migration
 # Test
 make test                     # Run unit tests
 make test-coverage            # Run tests with coverage report
-go test -v ./internal/services/...  # Test specific package
+go test -v ./internal/payment/service/...  # Test specific package
 
 # Code Quality
 make fmt                      # Format code
@@ -43,6 +44,15 @@ make install-tools            # Install air and golangci-lint
 ```
 
 ## Architecture
+
+### Layer Architecture
+
+**API → Service → Repository → Domain**
+
+- **Domain layer** (`internal/payment/payment.go`) - Defines interfaces, models, and constants
+- **Service layer** (`internal/payment/service/`) - Implements business logic
+- **Repository layer** (`internal/payment/repository/`) - Handles data access with sqlc
+- **API layer** (`internal/payment/api/`) - Thin HTTP handlers using chi + httpwrap patterns
 
 ### API Endpoints
 
@@ -97,52 +107,59 @@ make install-tools            # Install air and golangci-lint
 ### Project Structure
 
 ```
-├── cmd/server/main.go              # Entry point, router setup
-├── db/
-│   ├── db.go                       # Embedded migrations (goose)
-│   ├── migrations/                 # SQL migration files (goose format)
+├── cmd/api/main.go                     # Entry point
+├── database/
+│   ├── db.go                           # Embedded migrations
+│   ├── migrations/                     # SQL migration files (goose format)
 │   │   ├── 00001_create_payment_intents.sql
 │   │   └── 00002_create_email_wallets.sql
-│   └── query/                      # sqlc query files
-│       ├── payment_intent.sql
-│       └── email_wallet.sql
-├── sqlc.yaml                       # sqlc configuration
+│   ├── queries/                        # sqlc query files
+│   │   ├── payment_intent.sql
+│   │   └── email_wallet.sql
+│   └── sqlc.yaml                       # sqlc configuration
 ├── internal/
-│   ├── config/config.go            # Configuration management
-│   ├── database/db.go              # pgx connection + migrations
-│   ├── db/                         # sqlc generated code
+│   ├── api/                            # Main API setup and routing
+│   │   ├── route.go                    # Central routing with chi
+│   │   └── middleware/                 # HTTP middlewares
+│   │       ├── logger.go
+│   │       ├── error.go
+│   │       └── cors.go
+│   ├── config/config.go                # Configuration management
+│   ├── db/                             # sqlc generated code
 │   │   ├── db.go
 │   │   ├── models.go
 │   │   ├── payment_intent.sql.go
 │   │   └── email_wallet.sql.go
-│   ├── dto/requests.go             # Request/response DTOs
-│   ├── services/
-│   │   ├── payment_intent.go       # Business logic, async processing
-│   │   ├── base_payment.go         # USDC transfers via go-ethereum
-│   │   ├── x402_verifier.go        # X402 proof verification
-│   │   └── privy.go                # Privy API for wallet management
-│   ├── handlers/
-│   │   ├── payment_intents.go      # HTTP handlers
-│   │   └── health.go               # Health check handler
-│   └── middleware/
-│       ├── logger.go               # Request logging
-│       └── error.go                # Error handling
-├── pkg/utils/address.go            # Utility functions
-├── test.html                       # Browser-based API tester
-├── Makefile                        # Build commands
-└── docker-compose.yml              # PostgreSQL
+│   ├── httpwrap/                       # HTTP response helpers
+│   │   ├── httpwrap.go                 # Response/ErrorResponse types
+│   │   ├── handler.go                  # Handler wrapper function
+│   │   └── bindings.go                 # BindBody, error helpers
+│   ├── storage/                        # Database connections
+│   │   └── postgres.go                 # pgx connection + migrations
+│   ├── payment/                        # Payment domain
+│   │   ├── payment.go                  # Domain models, interfaces, constants
+│   │   ├── errors.go                   # Domain-specific errors
+│   │   ├── service/                    # Business logic layer
+│   │   │   ├── service.go              # PaymentIntentService
+│   │   │   ├── base_payment.go         # USDC transfers via go-ethereum
+│   │   │   ├── x402_verifier.go        # X402 proof verification
+│   │   │   └── privy.go                # Privy API for wallet management
+│   │   ├── repository/                 # Data access layer
+│   │   │   ├── repository.go           # Repository interface
+│   │   │   └── sqlc/sqlc.go            # sqlc implementation
+│   │   └── api/                        # HTTP handlers
+│   │       └── api.go                  # AddRoutes + handlers + DTOs
+│   └── health/api/                     # Health check domain
+│       └── api.go
+├── pkg/utils/address.go                # Utility functions
+├── test.html                           # Browser-based API tester (with auto-flow)
+├── Makefile                            # Build commands
+└── docker-compose.yml                  # PostgreSQL
 ```
-
-### Core Services (`internal/services/`)
-
-- **PaymentIntentService** (`payment_intent.go`) - Business logic, email/wallet handling, async processing via goroutines with 5-minute context timeout
-- **BasePaymentService** (`base_payment.go`) - USDC transfers via go-ethereum
-- **X402Verifier** (`x402_verifier.go`) - Proof verification using official `coinbase/x402/go` SDK
-- **PrivyService** (`privy.go`) - Email-to-wallet resolution via Privy API
 
 ### Key Dependencies
 
-- `gin-gonic/gin` - HTTP router
+- `go-chi/chi/v5` - HTTP router
 - `jackc/pgx/v5` - PostgreSQL driver
 - `sqlc` - Type-safe SQL code generation
 - `pressly/goose/v3` - Database migrations (embedded)
@@ -151,26 +168,26 @@ make install-tools            # Install air and golangci-lint
 
 ### Database (sqlc + goose)
 
-SQL migrations in `db/migrations/` (goose format with `-- +goose Up/Down` directives), queries in `db/query/`. Run `sqlc generate` to regenerate Go code. Migrations are embedded and run automatically on startup.
+SQL migrations in `database/migrations/` (goose format with `-- +goose Up/Down` directives), queries in `database/queries/`. Run `make sqlc` or `cd database && sqlc generate` to regenerate Go code. Migrations are embedded and run automatically on startup.
 
 **Tables:**
 - `payment_intents` - Payment intent records with status tracking
 - `email_wallets` - Email-to-wallet mapping cache
 
-**Status Constants** (in `internal/services/payment_intent.go`):
+**Status Constants** (in `internal/payment/payment.go`):
 - `AWAITING_PAYMENT`, `PENDING`, `VERIFICATION_FAILED`, `SOURCE_SETTLED`, `BASE_SETTLING`, `BASE_SETTLED`, `EXPIRED`
 
 ## Key Implementation Details
 
 ### USDC Contract Addresses
 
-Hardcoded in `internal/services/base_payment.go`:
+Hardcoded in `internal/payment/service/base_payment.go`:
 - **Base Sepolia**: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - **Base Mainnet**: `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`
 
 ### Privy Integration
 
-The `PrivyService` (`internal/services/privy.go`) handles email-to-wallet resolution:
+The `PrivyService` (`internal/payment/service/privy.go`) handles email-to-wallet resolution:
 1. Check local database cache for existing mapping
 2. If not found, query Privy API for user by email
 3. If user doesn't exist, create user with email via Privy import API
@@ -187,7 +204,7 @@ The `PrivyService` (`internal/services/privy.go`) handles email-to-wallet resolu
 
 ### X402 Proof Verification
 
-Uses official SDK (`internal/services/x402_verifier.go`):
+Uses official SDK (`internal/payment/service/x402_verifier.go`):
 ```go
 payload, _ := types.DecodePaymentPayloadFromBase64(proof)
 verifyResp, _ := client.Verify(payload, requirements)
@@ -233,12 +250,18 @@ The proxy wallet must have ETH for gas and sufficient USDC balance.
 Open `test.html` in a browser to test the API:
 1. Select payer chain (Solana/Base/BSC) → Choose email or wallet address → Enter amount → Create intent
 2. Complete X402 payment on selected chain externally
-3. Submit proof → Trigger async processing
-4. Poll for status updates until BASE_SETTLED
+3. Submit proof → **Auto-polling starts automatically** (when auto-flow enabled)
+4. Polling stops automatically when terminal state reached (BASE_SETTLED, VERIFICATION_FAILED, EXPIRED)
+
+**Auto-flow features:**
+- Toggle auto-flow ON/OFF in Configuration section
+- When enabled: auto-starts polling after proof submission
+- When enabled: auto-stops polling when terminal state reached
+- Shows notification on terminal state
 
 ### Unit Tests
 
 ```bash
 make test
-go test -v ./internal/services/...
+go test -v ./internal/payment/service/...
 ```

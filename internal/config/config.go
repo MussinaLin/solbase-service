@@ -103,7 +103,7 @@ func (c *Config) Validate() error {
 
 	// Validate networks
 	validSolanaNetworks := map[string]bool{
-		"solana-devnet":      true,
+		"solana-devnet":       true,
 		"solana-mainnet-beta": true,
 	}
 	if !validSolanaNetworks[c.SolanaNetwork] {

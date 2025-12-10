@@ -19,7 +19,16 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 - **On-Chain Verification** - Uses X402 facilitator to verify on-chain transactions
 - **Base Chain Integration** - USDC transfers using go-ethereum
 - **sqlc + PostgreSQL** - Type-safe SQL queries with goose migrations
-- **Testing Website** - Built-in HTML tester for API endpoints
+- **Testing Website** - Built-in HTML tester with auto-flow for API endpoints
+
+## Architecture
+
+**Layer Architecture: API → Service → Repository → Domain**
+
+- **Domain layer** - Defines interfaces, models, and constants
+- **Service layer** - Implements business logic
+- **Repository layer** - Handles data access with sqlc
+- **API layer** - Thin HTTP handlers using chi + httpwrap patterns
 
 ## Quick Start
 
@@ -45,12 +54,13 @@ cp .env.example .env
 # Edit .env with your configuration
 
 # Generate sqlc code (if needed)
-sqlc generate
+make sqlc
+# Or: cd database && sqlc generate
 
 # Run the application
 make run
 # Or directly:
-go run ./cmd/server/main.go
+go run ./cmd/api/main.go
 ```
 
 The API will be available at `http://localhost:3001`
@@ -189,46 +199,49 @@ Poll this endpoint to track payment progress.
    ├──> VERIFICATION_FAILED (invalid proof)
    │
    └──> SOURCE_SETTLED (proof verified)
-              │
-              │ (goroutine: execute Base payment)
-              │
-              └──> BASE_SETTLING
-                        │
-                        ├──> BASE_SETTLED (success)
-                        │
-                        └──> SOURCE_SETTLED (rollback on failure)
+            │
+            │ (goroutine: execute Base payment)
+            │
+            └──> BASE_SETTLING
+                      │
+                      ├──> BASE_SETTLED (success)
+                      │
+                      └──> SOURCE_SETTLED (rollback on failure)
 ```
 
 ## Project Structure
 
 ```
 .
-├── cmd/server/main.go              # Application entry point
-├── db/
-│   ├── db.go                       # Embedded migrations (goose)
-│   ├── migrations/                 # SQL migration files (goose format)
-│   └── query/                      # sqlc query definitions
-├── sqlc.yaml                       # sqlc configuration
+├── cmd/api/main.go                     # Application entry point
+├── database/
+│   ├── db.go                           # Embedded migrations
+│   ├── migrations/                     # SQL migration files (goose format)
+│   ├── queries/                        # sqlc query definitions
+│   └── sqlc.yaml                       # sqlc configuration
 ├── internal/
-│   ├── config/config.go            # Configuration management
-│   ├── database/db.go              # pgx connection + migrations
-│   ├── db/                         # sqlc generated code
-│   ├── dto/requests.go             # Request/response DTOs
-│   ├── services/
-│   │   ├── payment_intent.go       # Business logic + async processing
-│   │   ├── base_payment.go         # Base USDC transfers
-│   │   ├── x402_verifier.go        # X402 proof verification
-│   │   └── privy.go                # Privy API integration
-│   ├── handlers/
-│   │   ├── payment_intents.go      # HTTP handlers
-│   │   └── health.go               # Health check
-│   └── middleware/
-│       ├── logger.go               # Request logging
-│       └── error.go                # Error handling
-├── test.html                       # Browser-based API tester
-├── Makefile                        # Build commands
-├── CLAUDE.md                       # Claude Code instructions
-└── docker-compose.yml              # PostgreSQL
+│   ├── api/                            # Main API setup and routing
+│   │   ├── route.go                    # Central routing with chi
+│   │   └── middleware/                 # HTTP middlewares
+│   ├── config/config.go                # Configuration management
+│   ├── db/                             # sqlc generated code
+│   ├── httpwrap/                       # HTTP response helpers
+│   ├── storage/                        # Database connections
+│   ├── payment/                        # Payment domain
+│   │   ├── payment.go                  # Domain models, interfaces
+│   │   ├── errors.go                   # Domain-specific errors
+│   │   ├── service/                    # Business logic layer
+│   │   │   ├── service.go              # PaymentIntentService
+│   │   │   ├── base_payment.go         # Base USDC transfers
+│   │   │   ├── x402_verifier.go        # X402 proof verification
+│   │   │   └── privy.go                # Privy API integration
+│   │   ├── repository/                 # Data access layer
+│   │   └── api/                        # HTTP handlers + DTOs
+│   └── health/api/                     # Health check
+├── test.html                           # Browser-based API tester (with auto-flow)
+├── Makefile                            # Build commands
+├── CLAUDE.md                           # Claude Code instructions
+└── docker-compose.yml                  # PostgreSQL
 ```
 
 ## Database Configuration
@@ -293,7 +306,7 @@ make fmt              # Format code
 make lint             # Lint code (requires golangci-lint)
 make tidy             # Tidy go modules
 make install-tools    # Install air, golangci-lint, and goose
-sqlc generate         # Regenerate Go code from SQL
+make sqlc             # Regenerate Go code from SQL
 
 # Database migrations (goose)
 make migrate-up       # Run all pending migrations
@@ -310,7 +323,14 @@ Open `test.html` in a browser to test the API:
 3. Enter amount and click "Create Intent"
 4. Complete X402 payment on selected chain (external)
 5. Submit the X402 proof
-6. Click "Start Polling" to watch status updates until BASE_SETTLED
+6. **Auto-polling starts automatically** (when auto-flow enabled)
+7. Polling stops when terminal state reached (BASE_SETTLED, VERIFICATION_FAILED, EXPIRED)
+
+**Auto-flow features:**
+- Toggle auto-flow ON/OFF in Configuration section
+- Auto-starts polling after proof submission
+- Auto-stops polling when terminal state reached
+- Shows notification on terminal state
 
 ## Deployment
 
@@ -352,7 +372,7 @@ curl http://localhost:3001/health
 require (
     github.com/coinbase/x402/go       // X402 SDK
     github.com/ethereum/go-ethereum   // Base chain
-    github.com/gin-gonic/gin          // Web framework
+    github.com/go-chi/chi/v5          // Web framework
     github.com/jackc/pgx/v5           // PostgreSQL driver
     github.com/pressly/goose/v3       // Database migrations
     github.com/sirupsen/logrus        // Logging
@@ -366,7 +386,7 @@ MIT
 ## Additional Resources
 
 - [Go Documentation](https://go.dev/doc/)
-- [Gin Framework](https://gin-gonic.com/)
+- [Chi Router](https://go-chi.io/)
 - [sqlc](https://sqlc.dev/)
 - [go-ethereum](https://geth.ethereum.org/)
 - [X402 Go SDK](https://github.com/coinbase/x402/tree/main/go)

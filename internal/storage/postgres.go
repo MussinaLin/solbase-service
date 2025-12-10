@@ -1,4 +1,4 @@
-package database
+package storage
 
 import (
 	"context"
@@ -13,55 +13,52 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// MigrationsFS holds the embedded migrations filesystem (set by main package)
+// MigrationsFS holds the embedded migrations filesystem (set by main package).
 var MigrationsFS embed.FS
 
-// MigrationsDir is the directory path within the embedded FS
-var MigrationsDir string = "db/migrations"
+// MigrationsDir is the directory path within the embedded FS.
+var MigrationsDir = "migrations"
 
-// Database wraps pgxpool and sqlc queries
+// Database wraps pgxpool and sqlc queries.
 type Database struct {
 	Pool    *pgxpool.Pool
 	Queries *db.Queries
 }
 
-// Global database instance
-var DB *Database
+// global database instance.
+var globalDB *Database
 
-// Connect initializes the database connection and runs migrations
+// Connect initializes the database connection and runs migrations.
 func Connect(databaseURL string, logLevel string) (*Database, error) {
 	ctx := context.Background()
 
-	// Connect using pgxpool
 	poolConfig, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse database URL: %w", err)
+		return nil, fmt.Errorf("parse database URL: %w", err)
 	}
 
-	// Configure connection pool
 	poolConfig.MaxConns = 100
 	poolConfig.MinConns = 10
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to database: %w", err)
+		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 
-	// Verify connection
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("failed to ping database: %w", err)
+
+		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
 	log.Info("Database connection established successfully")
 
-	// Run migrations
 	if err := RunMigrations(pool); err != nil {
 		pool.Close()
+
 		return nil, fmt.Errorf("migrations failed: %w", err)
 	}
 
-	// Create queries instance
 	queries := db.New(pool)
 
 	database := &Database{
@@ -69,22 +66,21 @@ func Connect(databaseURL string, logLevel string) (*Database, error) {
 		Queries: queries,
 	}
 
-	DB = database
+	globalDB = database
+
 	return database, nil
 }
 
-// RunMigrations runs database migrations using goose with embedded migrations
+// RunMigrations runs database migrations using goose with embedded migrations.
 func RunMigrations(pool *pgxpool.Pool) error {
 	log.Info("Running database migrations...")
 
-	// Create a *sql.DB from the pgxpool for goose
 	sqlDB := stdlib.OpenDBFromPool(pool)
 
-	// Set up goose to use embedded migrations
 	goose.SetBaseFS(MigrationsFS)
 
 	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("failed to set goose dialect: %w", err)
+		return fmt.Errorf("set goose dialect: %w", err)
 	}
 
 	if err := goose.Up(sqlDB, MigrationsDir); err != nil {
@@ -92,17 +88,18 @@ func RunMigrations(pool *pgxpool.Pool) error {
 	}
 
 	log.Info("Database migrations completed successfully")
+
 	return nil
 }
 
-// RunMigrationsWithDB runs migrations with a *sql.DB (for CLI usage)
+// RunMigrationsWithDB runs migrations with a *sql.DB (for CLI usage).
 func RunMigrationsWithDB(sqlDB *sql.DB) error {
 	log.Info("Running database migrations...")
 
 	goose.SetBaseFS(MigrationsFS)
 
 	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("failed to set goose dialect: %w", err)
+		return fmt.Errorf("set goose dialect: %w", err)
 	}
 
 	if err := goose.Up(sqlDB, MigrationsDir); err != nil {
@@ -110,26 +107,32 @@ func RunMigrationsWithDB(sqlDB *sql.DB) error {
 	}
 
 	log.Info("Database migrations completed successfully")
+
 	return nil
 }
 
-// Close closes the database connection pool
+// Close closes the database connection pool.
 func Close() {
-	if DB != nil && DB.Pool != nil {
-		DB.Pool.Close()
+	if globalDB != nil && globalDB.Pool != nil {
+		globalDB.Pool.Close()
 		log.Info("Database connection closed")
 	}
 }
 
-// Ping checks if the database connection is alive
+// Ping checks if the database connection is alive.
 func Ping() error {
-	if DB == nil || DB.Pool == nil {
+	if globalDB == nil || globalDB.Pool == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
-	if err := DB.Pool.Ping(context.Background()); err != nil {
+	if err := globalDB.Pool.Ping(context.Background()); err != nil {
 		return fmt.Errorf("database ping failed: %w", err)
 	}
 
 	return nil
+}
+
+// DB returns the global database instance.
+func DB() *Database {
+	return globalDB
 }
