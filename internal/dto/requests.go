@@ -2,24 +2,42 @@ package dto
 
 import "time"
 
-// CreateIntentRequest represents the request to create a payment intent (proof-first approach)
+// CreateIntentRequest represents the request to create a payment intent
+// Either email or recipient must be provided, but not both
 type CreateIntentRequest struct {
-	SettleProof       string `json:"settle_proof" binding:"required"`
-	MerchantRecipient string `json:"merchant_recipient" binding:"required,eth_addr"`
-}
-
-// QueryIntentRequest represents the query parameter for getting intent
-type QueryIntentRequest struct {
-	IntentID string `form:"intent_id" binding:"required,uuid4"`
+	Email     string `json:"email"`                        // Email address (resolves to wallet via Privy)
+	Recipient string `json:"recipient"`                    // Direct wallet address
+	Amount    string `json:"amount" binding:"required"`
 }
 
 // CreateIntentResponse represents the response after creating an intent
 type CreateIntentResponse struct {
 	IntentID          string    `json:"intent_id"`
+	Email             *string   `json:"email,omitempty"` // Only present if email was provided
+	MerchantRecipient string    `json:"merchant_recipient"`
+	Amount            string    `json:"amount"`
+	Status            string    `json:"status"`
+	CreatedAt         time.Time `json:"created_at"`
+	ExpiresAt         time.Time `json:"expires_at"`
+}
+
+// SubmitProofRequest represents the request to submit a proof for an existing intent
+type SubmitProofRequest struct {
+	SettleProof string `json:"settle_proof" binding:"required"`
+}
+
+// SubmitProofResponse represents the response after submitting a proof
+type SubmitProofResponse struct {
+	IntentID          string    `json:"intent_id"`
 	MerchantRecipient string    `json:"merchant_recipient"`
 	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
+}
+
+// QueryIntentRequest represents the query parameter for getting intent
+type QueryIntentRequest struct {
+	IntentID string `form:"intent_id" binding:"required,uuid4"`
 }
 
 // SolanaPayment represents Solana payment details
@@ -44,6 +62,7 @@ type GetIntentResponse struct {
 	Status            string         `json:"status"`
 	Amount            *string        `json:"amount,omitempty"`
 	MerchantRecipient string         `json:"merchant_recipient"`
+	ReceiverEmail     *string        `json:"receiver_email,omitempty"`
 	PayerWallet       *string        `json:"payer_wallet,omitempty"`
 	ErrorMessage      *string        `json:"error_message,omitempty"`
 	CreatedAt         time.Time      `json:"created_at"`

@@ -1,85 +1,85 @@
 package database
 
 import (
+	"context"
 	"fmt"
-	"strings"
-	"time"
 
-	"github.com/agent-tech/x402-api-backend/internal/models"
+	"github.com/agent-tech/x402-api-backend/internal/db"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5/pgxpool"
 	log "github.com/sirupsen/logrus"
-	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
-// DB is the global database instance
-var DB *gorm.DB
+// Database wraps pgxpool and sqlc queries
+type Database struct {
+	Pool    *pgxpool.Pool
+	Queries *db.Queries
+}
 
-// Connect initializes the database connection based on the DATABASE_URL
-func Connect(databaseURL string, logLevel string) (*gorm.DB, error) {
-	var dialector gorm.Dialector
+// Global database instance
+var DB *Database
 
-	// Determine database type from connection string
-	if strings.HasPrefix(databaseURL, "postgresql://") || strings.HasPrefix(databaseURL, "postgres://") {
-		log.Info("Connecting to PostgreSQL database")
-		dialector = postgres.Open(databaseURL)
-	} else if strings.HasPrefix(databaseURL, "file:") || strings.HasSuffix(databaseURL, ".db") {
-		log.Info("Connecting to SQLite database")
-		// Remove "file:" prefix if present
-		dbPath := strings.TrimPrefix(databaseURL, "file:")
-		dialector = sqlite.Open(dbPath)
-	} else {
-		return nil, fmt.Errorf("unsupported database URL format: %s", databaseURL)
+// Connect initializes the database connection and runs migrations
+func Connect(databaseURL string, logLevel string) (*Database, error) {
+	ctx := context.Background()
+
+	// Connect using pgxpool
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse database URL: %w", err)
 	}
 
-	// Configure GORM logger
-	gormLogLevel := logger.Silent
-	if logLevel == "debug" {
-		gormLogLevel = logger.Info
-	}
+	// Configure connection pool
+	poolConfig.MaxConns = 100
+	poolConfig.MinConns = 10
 
-	// Open database connection
-	db, err := gorm.Open(dialector, &gorm.Config{
-		Logger: logger.Default.LogMode(gormLogLevel),
-		NowFunc: func() time.Time {
-			return time.Now().UTC()
-		},
-	})
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Get generic database object to configure connection pool
-	sqlDB, err := db.DB()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get database instance: %w", err)
+	// Verify connection
+	if err := pool.Ping(ctx); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	// Set connection pool settings
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-
-	// Run auto-migration
-	if err := AutoMigrate(db); err != nil {
-		return nil, fmt.Errorf("auto-migration failed: %w", err)
-	}
-
-	DB = db
 	log.Info("Database connection established successfully")
 
-	return db, nil
+	// Run migrations
+	if err := RunMigrations(databaseURL); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("migrations failed: %w", err)
+	}
+
+	// Create queries instance
+	queries := db.New(pool)
+
+	database := &Database{
+		Pool:    pool,
+		Queries: queries,
+	}
+
+	DB = database
+	return database, nil
 }
 
-// AutoMigrate runs database migrations
-func AutoMigrate(db *gorm.DB) error {
+// RunMigrations runs database migrations using golang-migrate
+func RunMigrations(databaseURL string) error {
 	log.Info("Running database migrations...")
 
-	err := db.AutoMigrate(
-		&models.PaymentIntent{},
+	m, err := migrate.New(
+		"file://db/migrations",
+		databaseURL,
 	)
 	if err != nil {
+		return fmt.Errorf("failed to create migration instance: %w", err)
+	}
+	defer m.Close()
+
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("migration failed: %w", err)
 	}
 
@@ -87,37 +87,21 @@ func AutoMigrate(db *gorm.DB) error {
 	return nil
 }
 
-// Close closes the database connection
-func Close() error {
-	if DB == nil {
-		return nil
+// Close closes the database connection pool
+func Close() {
+	if DB != nil && DB.Pool != nil {
+		DB.Pool.Close()
+		log.Info("Database connection closed")
 	}
-
-	sqlDB, err := DB.DB()
-	if err != nil {
-		return fmt.Errorf("failed to get database instance: %w", err)
-	}
-
-	if err := sqlDB.Close(); err != nil {
-		return fmt.Errorf("failed to close database connection: %w", err)
-	}
-
-	log.Info("Database connection closed")
-	return nil
 }
 
 // Ping checks if the database connection is alive
 func Ping() error {
-	if DB == nil {
+	if DB == nil || DB.Pool == nil {
 		return fmt.Errorf("database not initialized")
 	}
 
-	sqlDB, err := DB.DB()
-	if err != nil {
-		return fmt.Errorf("failed to get database instance: %w", err)
-	}
-
-	if err := sqlDB.Ping(); err != nil {
+	if err := DB.Pool.Ping(context.Background()); err != nil {
 		return fmt.Errorf("database ping failed: %w", err)
 	}
 

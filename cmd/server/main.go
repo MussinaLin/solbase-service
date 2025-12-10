@@ -54,11 +54,15 @@ func main() {
 	}
 	defer basePaymentService.Close()
 
+	// Privy service for email-to-wallet mapping
+	privyService := services.NewPrivyService(db.Queries, cfg.PrivyAppID, cfg.PrivyAppSecret)
+
 	// Payment intent service
 	paymentIntentService := services.NewPaymentIntentService(
-		db,
+		db.Queries,
 		basePaymentService,
 		x402Verifier,
+		privyService,
 		cfg.SolanaNetwork,
 		cfg.BaseNetwork,
 	)
@@ -107,11 +111,13 @@ func main() {
 	// Health check endpoint (not under API prefix)
 	router.GET("/health", healthHandler.Check)
 
-	// API routes (simplified: 2 endpoints)
+	// API routes
 	api := router.Group("/" + cfg.APIPrefix)
 	{
-		// POST /intents - Create intent with X402 proof (async processing)
+		// POST /intents - Create intent with email or wallet address as receiver
 		api.POST("/intents", paymentIntentsHandler.CreateIntent)
+		// POST /intents/:intent_id - Submit X402 proof for existing intent
+		api.POST("/intents/:intent_id", paymentIntentsHandler.SubmitProof)
 		// GET /intents?intent_id={id} - Get combined status + receipt
 		api.GET("/intents", paymentIntentsHandler.GetIntent)
 	}

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from Solana to Base using the X402 protocol. Users pay on Solana, merchants receive USDC on Base chain via a proxy wallet.
+X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from Solana to Base using the X402 protocol. Users pay on Solana using either an email address or wallet address as receiver. Emails are resolved to Base wallets via Privy. Merchants receive USDC on Base chain.
 
 ## Development Commands
 
@@ -17,6 +17,10 @@ go run ./cmd/server/main.go   # Run directly
 # Build
 make build                    # Build binary to ./bin/server
 go build -o bin/server ./cmd/server
+
+# Database
+docker-compose up -d          # Start PostgreSQL
+sqlc generate                 # Generate Go code from SQL
 
 # Test
 make test                     # Run unit tests
@@ -34,51 +38,84 @@ make install-tools            # Install air and golangci-lint
 
 ## Architecture
 
-### Simplified API (3 Endpoints)
+### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/intents` | Create intent with X402 proof (async processing) |
+| POST | `/api/intents` | Create intent (email OR wallet address + amount) |
+| POST | `/api/intents/{intent_id}` | Submit X402 proof for existing intent |
 | GET | `/api/intents?intent_id={id}` | Get combined status + receipt |
 | GET | `/health` | Health check |
 
-### Payment Flow (Proof-First Approach)
+### Create Intent Request Options
+
+**Option 1 - Email (resolves to wallet via Privy):**
+```json
+{ "email": "receiver@example.com", "amount": "10.00" }
+```
+
+**Option 2 - Direct Wallet Address:**
+```json
+{ "recipient": "0x742d35Cc...", "amount": "10.00" }
+```
+
+### Payment Flow
 
 ```
-POST /intents (settle_proof + merchant_recipient)
-    ↓
-PENDING ──────────────────────────────> EXPIRED (10 min)
-    │
-    │ (goroutine: verify X402 proof)
-    │
-    ├──> VERIFICATION_FAILED (invalid proof)
-    │
-    └──> SOL_SETTLED (proof verified)
-              │
-              │ (goroutine: trigger Base payment)
-              │
-              └──> BASE_SETTLING
-                        │
-                        ├──> BASE_SETTLED (success)
-                        │
-                        └──> SOL_SETTLED (rollback on failure)
+1. POST /intents (email OR recipient + amount)
+   → If email: resolve to Base wallet via Privy
+   → If recipient: use wallet address directly
+   → Create intent in AWAITING_PAYMENT status
+   → Return intent_id + wallet address
+
+2. Client completes X402 payment on Solana (external)
+
+3. POST /intents/{intent_id} (settle_proof)
+   → Validate proof matches intent (amount)
+   → Update status to PENDING
+   → Trigger async processing
+
+4. Async Processing (goroutine):
+   PENDING → VERIFICATION_FAILED (invalid proof)
+          → SOL_SETTLED (proof verified on-chain)
+                ↓
+          BASE_SETTLING
+                ↓
+          BASE_SETTLED (success) / SOL_SETTLED (rollback)
+
+5. AWAITING_PAYMENT/PENDING → EXPIRED (10 min timeout)
 ```
 
 ### Project Structure
 
 ```
 ├── cmd/server/main.go              # Entry point, router setup
+├── db/
+│   ├── migrations/                 # SQL migration files
+│   │   ├── 000001_create_payment_intents.up.sql
+│   │   ├── 000001_create_payment_intents.down.sql
+│   │   ├── 000002_create_email_wallets.up.sql
+│   │   └── 000002_create_email_wallets.down.sql
+│   └── query/                      # sqlc query files
+│       ├── payment_intent.sql
+│       └── email_wallet.sql
+├── sqlc.yaml                       # sqlc configuration
 ├── internal/
 │   ├── config/config.go            # Configuration management
-│   ├── database/db.go              # GORM database connection
-│   ├── models/payment_intent.go    # Domain model + status helpers
+│   ├── database/db.go              # pgx connection + migrations
+│   ├── db/                         # sqlc generated code
+│   │   ├── db.go
+│   │   ├── models.go
+│   │   ├── payment_intent.sql.go
+│   │   └── email_wallet.sql.go
 │   ├── dto/requests.go             # Request/response DTOs
 │   ├── services/
 │   │   ├── payment_intent.go       # Business logic, async processing
 │   │   ├── base_payment.go         # USDC transfers via go-ethereum
-│   │   └── x402_verifier.go        # X402 proof verification
+│   │   ├── x402_verifier.go        # X402 proof verification
+│   │   └── privy.go                # Privy API for wallet management
 │   ├── handlers/
-│   │   ├── payment_intents.go      # HTTP handlers (2 endpoints)
+│   │   ├── payment_intents.go      # HTTP handlers
 │   │   └── health.go               # Health check handler
 │   └── middleware/
 │       ├── logger.go               # Request logging
@@ -86,28 +123,35 @@ PENDING ────────────────────────
 ├── pkg/utils/address.go            # Utility functions
 ├── test.html                       # Browser-based API tester
 ├── Makefile                        # Build commands
-└── docker-compose.yml              # PostgreSQL + Redis
+└── docker-compose.yml              # PostgreSQL
 ```
 
 ### Core Services (`internal/services/`)
 
-- **PaymentIntentService** (`payment_intent.go`) - Business logic, async processing via goroutines with 5-minute context timeout
+- **PaymentIntentService** (`payment_intent.go`) - Business logic, email/wallet handling, async processing via goroutines with 5-minute context timeout
 - **BasePaymentService** (`base_payment.go`) - USDC transfers via go-ethereum
 - **X402Verifier** (`x402_verifier.go`) - Proof verification using official `coinbase/x402/go` SDK
+- **PrivyService** (`privy.go`) - Email-to-wallet resolution via Privy API
 
 ### Key Dependencies
 
 - `gin-gonic/gin` - HTTP router
-- `gorm.io/gorm` - ORM (SQLite/PostgreSQL)
+- `jackc/pgx/v5` - PostgreSQL driver
+- `sqlc` - Type-safe SQL code generation
+- `golang-migrate/migrate` - Database migrations
 - `ethereum/go-ethereum` - Base chain integration
 - `coinbase/x402/go` - X402 facilitator client
 
-### Database Model
+### Database (sqlc + golang-migrate)
 
-`internal/models/payment_intent.go` - GORM model with:
-- Status constants: `PENDING`, `VERIFICATION_FAILED`, `SOL_SETTLED`, `BASE_SETTLING`, `BASE_SETTLED`, `EXPIRED`
-- Helper methods: `CanTriggerBasePayment()`, `IsExpired()`
-- ErrorMessage field for storing verification/processing errors
+SQL migrations in `db/migrations/`, queries in `db/query/`. Run `sqlc generate` to regenerate Go code.
+
+**Tables:**
+- `payment_intents` - Payment intent records with status tracking
+- `email_wallets` - Email-to-wallet mapping cache
+
+**Status Constants** (in `internal/services/payment_intent.go`):
+- `AWAITING_PAYMENT`, `PENDING`, `VERIFICATION_FAILED`, `SOL_SETTLED`, `BASE_SETTLING`, `BASE_SETTLED`, `EXPIRED`
 
 ## Key Implementation Details
 
@@ -117,13 +161,22 @@ Hardcoded in `internal/services/base_payment.go`:
 - **Base Sepolia**: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - **Base Mainnet**: `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`
 
-### Async Processing
+### Privy Integration
 
-POST /intents triggers a goroutine with 5-minute context timeout (`internal/services/payment_intent.go:69-74`):
-1. Verify X402 proof → extract amount, payer from payload
-2. Update to SOL_SETTLED
-3. Execute Base USDC transfer
-4. Update to BASE_SETTLED (or rollback to SOL_SETTLED on failure)
+The `PrivyService` (`internal/services/privy.go`) handles email-to-wallet resolution:
+1. Check local database cache for existing mapping
+2. If not found, query Privy API for user by email
+3. If user doesn't exist, create user with email via Privy import API
+4. Create ethereum wallet for user if needed
+5. Cache mapping in local database
+
+### Proof Validation
+
+`SubmitProof` validates the X402 proof before storing:
+1. Decode proof using `types.DecodePaymentPayloadFromBase64(proof)`
+2. Extract amount from `payload.Payload.Authorization.Value`
+3. Compare with intent amount (must match)
+4. On-chain verification is done asynchronously via X402 facilitator
 
 ### X402 Proof Verification
 
@@ -133,18 +186,31 @@ payload, _ := types.DecodePaymentPayloadFromBase64(proof)
 verifyResp, _ := client.Verify(payload, requirements)
 ```
 
-Amount is extracted from `payload.Payload.Authorization.Value` (string, USDC microdollars).
+Amount is extracted from `payload.Payload.Authorization.Value` (string, USDC microdollars with 6 decimals).
 
 ## Environment Variables
 
 ```env
-DATABASE_URL                 # file:./dev.db (SQLite) or postgresql://...
-SOLANA_RECEIVER_ADDRESS      # Solana wallet for receiving payments
-BASE_PROXY_PRIVATE_KEY       # 0x + 64 hex chars
-SOLANA_NETWORK              # solana-devnet | solana-mainnet-beta
-BASE_NETWORK                # base-sepolia | base
-PORT                        # Default: 3001
-FACILITATOR_URL             # Default: https://x402.org/facilitator
+# Server
+PORT=3001
+
+# Database (PostgreSQL only)
+DATABASE_URL=postgresql://x402:x402_dev_password@localhost:5432/x402_payments?sslmode=disable
+
+# Solana
+SOLANA_RECEIVER_ADDRESS=Your_Solana_Address
+SOLANA_NETWORK=solana-devnet          # solana-devnet | solana-mainnet-beta
+
+# Base Chain
+BASE_NETWORK=base-sepolia             # base-sepolia | base
+BASE_PROXY_PRIVATE_KEY=0x...          # 0x + 64 hex chars
+
+# Privy (for email-to-wallet)
+PRIVY_APP_ID=your-privy-app-id
+PRIVY_APP_SECRET=your-privy-app-secret
+
+# X402
+FACILITATOR_URL=https://x402.org/facilitator
 ```
 
 The proxy wallet must have ETH for gas and sufficient USDC balance.
@@ -154,9 +220,10 @@ The proxy wallet must have ETH for gas and sufficient USDC balance.
 ### Local Testing Website
 
 Open `test.html` in a browser to test the API:
-- Create intent with X402 proof
-- Poll for status updates
-- Health check
+1. Choose email or wallet address → Enter amount → Create intent
+2. Complete X402 payment externally
+3. Submit proof → Trigger async processing
+4. Poll for status updates
 
 ### Unit Tests
 
@@ -164,7 +231,3 @@ Open `test.html` in a browser to test the API:
 make test
 go test -v ./internal/services/...
 ```
-
-- Mock database with GORM's in-memory SQLite
-- Test state machine transitions
-- Test async processing flow

@@ -38,7 +38,7 @@
             margin: 10px 0 5px 0;
             color: #555;
         }
-        input, textarea {
+        input, textarea, select {
             width: 100%;
             padding: 12px;
             margin-bottom: 10px;
@@ -47,7 +47,7 @@
             font-size: 14px;
             transition: border-color 0.2s;
         }
-        input:focus, textarea:focus {
+        input:focus, textarea:focus, select:focus {
             outline: none;
             border-color: #4a69bd;
         }
@@ -115,6 +115,7 @@
             text-transform: uppercase;
             margin-bottom: 10px;
         }
+        .AWAITING_PAYMENT { background: #17a2b8; color: white; }
         .PENDING { background: #ffd93d; color: #333; }
         .SOL_SETTLED { background: #6bcb77; color: white; }
         .BASE_SETTLING { background: #4d96ff; color: white; }
@@ -156,35 +157,146 @@
             border-radius: 4px;
             font-family: monospace;
         }
+        .step-number {
+            display: inline-block;
+            width: 28px;
+            height: 28px;
+            background: #4a69bd;
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 28px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .step-title {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .wallet-info {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .wallet-info h4 {
+            margin: 0 0 10px 0;
+            color: #155724;
+        }
+        .wallet-address {
+            font-family: monospace;
+            font-size: 14px;
+            word-break: break-all;
+            color: #155724;
+        }
+        .receiver-type-selector {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 15px;
+        }
+        .receiver-type-option {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+        .receiver-type-option input {
+            width: auto;
+            margin-right: 8px;
+        }
+        .hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <h1>X402 Cross-Chain Payment API Tester</h1>
 
     <div class="info-box">
+        <h3>Payment Flow</h3>
+        <p><strong>Step 1:</strong> Create payment intent with email or wallet + amount → Get intent details</p>
+        <p><strong>Step 2:</strong> Complete X402 payment to the wallet (external)</p>
+        <p><strong>Step 3:</strong> Submit X402 proof to the backend</p>
+        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED</p>
+    </div>
+
+    <div class="info-box">
         <h3>API Endpoints</h3>
-        <p><strong>POST</strong> <span class="api-url">/api/intents</span> - Create intent with X402 proof</p>
+        <p><strong>POST</strong> <span class="api-url">/api/intents</span> - Create intent (email or wallet + amount)</p>
+        <p><strong>POST</strong> <span class="api-url">/api/intents/{intent_id}</span> - Submit X402 proof</p>
         <p><strong>GET</strong> <span class="api-url">/api/intents?intent_id={id}</span> - Get status + receipt</p>
         <p><strong>GET</strong> <span class="api-url">/health</span> - Health check</p>
     </div>
 
     <div class="section">
-        <h2>1. Create Payment Intent</h2>
-        <p>Submit X402 settlement proof and merchant address to create a new payment intent.</p>
+        <div class="step-title">
+            <span class="step-number">1</span>
+            <h2>Create Payment Intent</h2>
+        </div>
+        <p>Choose how to specify the receiver: by email (resolves to wallet via Privy) or direct wallet address.</p>
 
-        <label for="settleProof">X402 Settlement Proof (Base64):</label>
-        <textarea id="settleProof" rows="4" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+        <div class="receiver-type-selector">
+            <label class="receiver-type-option">
+                <input type="radio" name="receiverType" value="email" checked onchange="toggleReceiverType()">
+                Email Address
+            </label>
+            <label class="receiver-type-option">
+                <input type="radio" name="receiverType" value="wallet" onchange="toggleReceiverType()">
+                Wallet Address
+            </label>
+        </div>
 
-        <label for="merchantRecipient">Merchant Recipient (0x... address):</label>
-        <input type="text" id="merchantRecipient" placeholder="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1">
+        <div id="emailInput">
+            <label for="receiverEmail">Receiver Email:</label>
+            <input type="email" id="receiverEmail" placeholder="receiver@example.com">
+        </div>
+
+        <div id="walletInput" class="hidden">
+            <label for="receiverWalletAddress">Receiver Wallet Address (Base chain):</label>
+            <input type="text" id="receiverWalletAddress" placeholder="0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1">
+        </div>
+
+        <label for="paymentAmount">Amount (USD):</label>
+        <input type="text" id="paymentAmount" placeholder="10.00">
 
         <button onclick="createIntent()">Create Intent</button>
 
         <div id="createResult" class="result" style="display:none;"></div>
+
+        <div id="walletInfo" class="wallet-info" style="display:none;">
+            <h4>Payment Details</h4>
+            <p><strong>Intent ID:</strong> <span id="createdIntentId"></span></p>
+            <p><strong>Receiver Wallet:</strong></p>
+            <p class="wallet-address" id="receiverWallet"></p>
+            <p><strong>Amount:</strong> <span id="paymentAmountDisplay"></span> USDC</p>
+            <p style="margin-top: 10px; font-style: italic; color: #666;">Use this wallet address as the recipient for your X402 payment on Solana.</p>
+        </div>
     </div>
 
     <div class="section">
-        <h2>2. Check Payment Status</h2>
+        <div class="step-title">
+            <span class="step-number">2</span>
+            <h2>Submit X402 Proof</h2>
+        </div>
+        <p>After completing the X402 payment, submit the proof to trigger Base chain transfer.</p>
+
+        <label for="intentIdForProof">Intent ID:</label>
+        <input type="text" id="intentIdForProof" placeholder="Enter intent UUID from Step 1">
+
+        <label for="settleProof">X402 Settlement Proof (Base64):</label>
+        <textarea id="settleProof" rows="4" placeholder="eyJhbGciOiJIUzI1NiIs..."></textarea>
+
+        <button onclick="submitProof()">Submit Proof</button>
+
+        <div id="proofResult" class="result" style="display:none;"></div>
+    </div>
+
+    <div class="section">
+        <div class="step-title">
+            <span class="step-number">3</span>
+            <h2>Check Payment Status</h2>
+        </div>
         <p>Query the status of a payment intent. Use polling to monitor async processing.</p>
 
         <label for="intentId">Intent ID:</label>
@@ -198,7 +310,10 @@
     </div>
 
     <div class="section">
-        <h2>3. Health Check</h2>
+        <div class="step-title">
+            <span class="step-number">4</span>
+            <h2>Health Check</h2>
+        </div>
         <p>Check if the API server is running and database is connected.</p>
 
         <button onclick="healthCheck()">Check Health</button>
@@ -222,6 +337,12 @@
             alert('API Base updated to: ' + API_BASE);
         }
 
+        function toggleReceiverType() {
+            const isEmail = document.querySelector('input[name="receiverType"]:checked').value === 'email';
+            document.getElementById('emailInput').classList.toggle('hidden', !isEmail);
+            document.getElementById('walletInput').classList.toggle('hidden', isEmail);
+        }
+
         function showResult(elementId, content) {
             const el = document.getElementById(elementId);
             el.style.display = 'block';
@@ -229,36 +350,89 @@
         }
 
         async function createIntent() {
-            const proof = document.getElementById('settleProof').value.trim();
-            const recipient = document.getElementById('merchantRecipient').value.trim();
+            const receiverType = document.querySelector('input[name="receiverType"]:checked').value;
+            const amount = document.getElementById('paymentAmount').value.trim();
 
-            if (!proof) {
-                alert('Please enter the X402 settlement proof');
+            if (!amount) {
+                alert('Please enter the payment amount');
                 return;
             }
-            if (!recipient) {
-                alert('Please enter the merchant recipient address');
-                return;
+
+            let requestBody = { amount: amount };
+
+            if (receiverType === 'email') {
+                const email = document.getElementById('receiverEmail').value.trim();
+                if (!email) {
+                    alert('Please enter the receiver email address');
+                    return;
+                }
+                requestBody.email = email;
+            } else {
+                const wallet = document.getElementById('receiverWalletAddress').value.trim();
+                if (!wallet) {
+                    alert('Please enter the receiver wallet address');
+                    return;
+                }
+                requestBody.recipient = wallet;
             }
 
             try {
                 const res = await fetch(`${API_BASE}/api/intents`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        settle_proof: proof,
-                        merchant_recipient: recipient
-                    })
+                    body: JSON.stringify(requestBody)
                 });
 
                 const data = await res.json();
                 showResult('createResult', JSON.stringify(data, null, 2));
 
-                if (data.intent_id) {
+                if (data.intent_id && data.merchant_recipient) {
+                    // Show wallet info
+                    document.getElementById('walletInfo').style.display = 'block';
+                    document.getElementById('createdIntentId').textContent = data.intent_id;
+                    document.getElementById('receiverWallet').textContent = data.merchant_recipient;
+                    document.getElementById('paymentAmountDisplay').textContent = data.amount;
+
+                    // Pre-fill other fields
+                    document.getElementById('intentIdForProof').value = data.intent_id;
                     document.getElementById('intentId').value = data.intent_id;
                 }
             } catch (err) {
                 showResult('createResult', 'Error: ' + err.message);
+            }
+        }
+
+        async function submitProof() {
+            const intentId = document.getElementById('intentIdForProof').value.trim();
+            const proof = document.getElementById('settleProof').value.trim();
+
+            if (!intentId) {
+                alert('Please enter the intent ID');
+                return;
+            }
+            if (!proof) {
+                alert('Please enter the X402 settlement proof');
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API_BASE}/api/intents/${intentId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        settle_proof: proof
+                    })
+                });
+
+                const data = await res.json();
+                showResult('proofResult', JSON.stringify(data, null, 2));
+
+                // Update the status intent ID field
+                if (data.intent_id) {
+                    document.getElementById('intentId').value = data.intent_id;
+                }
+            } catch (err) {
+                showResult('proofResult', 'Error: ' + err.message);
             }
         }
 
@@ -329,9 +503,12 @@
         // Keyboard shortcut: Ctrl+Enter to submit forms
         document.addEventListener('keydown', function(e) {
             if (e.ctrlKey && e.key === 'Enter') {
-                if (document.activeElement.id === 'settleProof' || document.activeElement.id === 'merchantRecipient') {
+                const activeId = document.activeElement.id;
+                if (activeId === 'receiverEmail' || activeId === 'receiverWalletAddress' || activeId === 'paymentAmount') {
                     createIntent();
-                } else if (document.activeElement.id === 'intentId') {
+                } else if (activeId === 'settleProof' || activeId === 'intentIdForProof') {
+                    submitProof();
+                } else if (activeId === 'intentId') {
                     getIntent();
                 }
             }

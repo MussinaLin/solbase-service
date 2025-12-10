@@ -33,6 +33,10 @@ type Config struct {
 	// X402
 	FacilitatorURL string
 
+	// Privy
+	PrivyAppID     string
+	PrivyAppSecret string
+
 	// Logging
 	LogLevel string
 
@@ -57,6 +61,8 @@ func Load() (*Config, error) {
 		BaseProxyPrivateKey:   getEnv("BASE_PROXY_PRIVATE_KEY", ""),
 		CORSOrigins:           getEnvAsSlice("CORS_ORIGINS", []string{"http://localhost:3000"}),
 		FacilitatorURL:        getEnv("FACILITATOR_URL", "https://x402.org/facilitator"),
+		PrivyAppID:            getEnv("PRIVY_APP_ID", ""),
+		PrivyAppSecret:        getEnv("PRIVY_APP_SECRET", ""),
 		LogLevel:              getEnv("LOG_LEVEL", "debug"),
 		RateLimitTTL:          getEnvAsInt("RATE_LIMIT_TTL", 60),
 		RateLimitMax:          getEnvAsInt("RATE_LIMIT_MAX", 10),
@@ -104,6 +110,14 @@ func (c *Config) Validate() error {
 	}
 	if !validBaseNetworks[c.BaseNetwork] {
 		return fmt.Errorf("BASE_NETWORK must be one of: base-sepolia, base")
+	}
+
+	// Validate Privy credentials
+	if c.PrivyAppID == "" {
+		return fmt.Errorf("PRIVY_APP_ID is required")
+	}
+	if c.PrivyAppSecret == "" {
+		return fmt.Errorf("PRIVY_APP_SECRET is required")
 	}
 
 	return nil
