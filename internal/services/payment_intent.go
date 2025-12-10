@@ -20,11 +20,18 @@ const (
 	StatusAwaitingPayment    = "AWAITING_PAYMENT"
 	StatusPending            = "PENDING"
 	StatusVerificationFailed = "VERIFICATION_FAILED"
-	StatusSolSettled         = "SOL_SETTLED"
+	StatusSourceSettled      = "SOURCE_SETTLED" // Was SOL_SETTLED - now generic for any source chain
 	StatusBaseSettling       = "BASE_SETTLING"
 	StatusBaseSettled        = "BASE_SETTLED"
 	StatusExpired            = "EXPIRED"
 )
+
+// Valid payer chains
+var validPayerChains = map[string]bool{
+	"solana": true,
+	"base":   true,
+	"bsc":    true,
+}
 
 // PaymentIntentService handles payment intent business logic
 type PaymentIntentService struct {
@@ -65,11 +72,21 @@ func (s *PaymentIntentService) CreateIntent(req dto.CreateIntentRequest) (*dto.C
 		return nil, fmt.Errorf("cannot provide both email and recipient")
 	}
 
+	// Validate and default payer chain
+	payerChain := req.PayerChain
+	if payerChain == "" {
+		payerChain = "solana" // Default to solana for backward compatibility
+	}
+	if !validPayerChains[payerChain] {
+		return nil, fmt.Errorf("invalid payer_chain: must be solana, base, or bsc")
+	}
+
 	intentID := uuid.New().String()
 	expiresAt := time.Now().Add(10 * time.Minute) // 10 minutes expiry
 
 	logger := log.WithFields(log.Fields{
-		"intent_id": intentID,
+		"intent_id":   intentID,
+		"payer_chain": payerChain,
 	})
 
 	var walletAddress string
@@ -101,8 +118,8 @@ func (s *PaymentIntentService) CreateIntent(req dto.CreateIntentRequest) (*dto.C
 	params := db.CreatePaymentIntentParams{
 		ID:                uuid.New().String(),
 		IntentID:          intentID,
-		PayerChain:        "solana",
-		TargetChain:       "base",
+		PayerChain:        payerChain,
+		TargetChain:       "base", // Target is always Base
 		MerchantRecipient: walletAddress,
 		Amount:            req.Amount,
 		Status:            StatusAwaitingPayment,
@@ -127,6 +144,7 @@ func (s *PaymentIntentService) CreateIntent(req dto.CreateIntentRequest) (*dto.C
 		Email:             email,
 		MerchantRecipient: intent.MerchantRecipient,
 		Amount:            intent.Amount,
+		PayerChain:        intent.PayerChain,
 		Status:            intent.Status,
 		CreatedAt:         intent.CreatedAt.Time,
 		ExpiresAt:         intent.ExpiresAt.Time,
@@ -184,7 +202,7 @@ func (s *PaymentIntentService) SubmitProof(intentID string, req dto.SubmitProofR
 	go func() {
 		asyncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		s.processIntentAsync(asyncCtx, intentID, req.SettleProof, intent.MerchantRecipient)
+		s.processIntentAsync(asyncCtx, intentID, req.SettleProof, intent.MerchantRecipient, intent.PayerChain)
 	}()
 
 	return &dto.SubmitProofResponse{
@@ -234,8 +252,11 @@ func (s *PaymentIntentService) validateProofAgainstIntent(settleProof string, in
 }
 
 // processIntentAsync handles the async verification and Base payment flow
-func (s *PaymentIntentService) processIntentAsync(ctx context.Context, intentID string, settleProof string, merchantRecipient string) {
-	logger := log.WithField("intent_id", intentID)
+func (s *PaymentIntentService) processIntentAsync(ctx context.Context, intentID string, settleProof string, merchantRecipient string, payerChain string) {
+	logger := log.WithFields(log.Fields{
+		"intent_id":   intentID,
+		"payer_chain": payerChain,
+	})
 	logger.Info("Starting async intent processing")
 
 	// Check context before verification
@@ -249,17 +270,17 @@ func (s *PaymentIntentService) processIntentAsync(ctx context.Context, intentID 
 
 	// Step 1: Verify X402 proof and extract details (verifies on-chain transaction)
 	logger.Info("Verifying X402 proof with facilitator")
-	details, err := s.x402Verifier.VerifyAndExtractDetails(settleProof, merchantRecipient)
+	details, err := s.x402Verifier.VerifyAndExtractDetails(settleProof, merchantRecipient, payerChain)
 	if err != nil {
 		logger.WithError(err).Error("Proof verification failed")
 		s.updateIntentError(intentID, fmt.Sprintf("Verification failed: %s", err.Error()))
 		return
 	}
 
-	// Step 2: Update to SOL_SETTLED with extracted data
-	logger.Info("Proof verified, updating to SOL_SETTLED")
-	if err := s.updateIntentSolSettled(intentID, details); err != nil {
-		logger.WithError(err).Error("Failed to update intent to SOL_SETTLED")
+	// Step 2: Update to SOURCE_SETTLED with extracted data
+	logger.Info("Proof verified, updating to SOURCE_SETTLED")
+	if err := s.updateIntentSourceSettled(intentID, details); err != nil {
+		logger.WithError(err).Error("Failed to update intent to SOURCE_SETTLED")
 		return
 	}
 
@@ -292,14 +313,14 @@ func (s *PaymentIntentService) updateIntentError(intentID string, errorMsg strin
 	}
 }
 
-// updateIntentSolSettled updates the intent with Solana settlement data
-func (s *PaymentIntentService) updateIntentSolSettled(intentID string, details *ProofDetails) error {
+// updateIntentSourceSettled updates the intent with source chain settlement data
+func (s *PaymentIntentService) updateIntentSourceSettled(intentID string, details *ProofDetails) error {
 	ctx := context.Background()
 	now := time.Now()
 
 	params := db.UpdatePaymentIntentSolSettledParams{
 		IntentID:     intentID,
-		Status:       StatusSolSettled,
+		Status:       StatusSourceSettled,
 		Amount:       details.Amount,
 		SolSettledAt: pgtype.Timestamp{Time: now, Valid: true},
 	}
@@ -325,8 +346,8 @@ func (s *PaymentIntentService) triggerBasePaymentInternal(ctx context.Context, i
 		return fmt.Errorf("failed to find intent: %w", err)
 	}
 
-	// Validate status - can trigger Base payment only if SOL_SETTLED
-	if intent.Status != StatusSolSettled {
+	// Validate status - can trigger Base payment only if SOURCE_SETTLED
+	if intent.Status != StatusSourceSettled {
 		return fmt.Errorf("cannot trigger Base payment: intent status is %s", intent.Status)
 	}
 
@@ -345,7 +366,7 @@ func (s *PaymentIntentService) triggerBasePaymentInternal(ctx context.Context, i
 		// Rollback
 		s.queries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
 			IntentID: intentID,
-			Status:   StatusSolSettled,
+			Status:   StatusSourceSettled,
 		})
 		return fmt.Errorf("invalid amount: %w", err)
 	}
@@ -358,12 +379,12 @@ func (s *PaymentIntentService) triggerBasePaymentInternal(ctx context.Context, i
 	})
 
 	if err != nil {
-		logger.WithError(err).Error("Base payment failed, rolling back to SOL_SETTLED")
+		logger.WithError(err).Error("Base payment failed, rolling back to SOURCE_SETTLED")
 
-		// Rollback to SOL_SETTLED to allow retry
+		// Rollback to SOURCE_SETTLED to allow retry
 		s.queries.UpdatePaymentIntentStatus(ctx, db.UpdatePaymentIntentStatusParams{
 			IntentID: intentID,
-			Status:   StatusSolSettled,
+			Status:   StatusSourceSettled,
 		})
 
 		return fmt.Errorf("Base payment failed: %w", err)
@@ -408,11 +429,8 @@ func (s *PaymentIntentService) GetIntent(intentID string) (*dto.GetIntentRespons
 		intent.Status = StatusExpired
 	}
 
-	// Determine explorer URLs
-	solanaExplorerBase := "https://solscan.io?cluster=devnet"
-	if s.solanaNetwork == "solana-mainnet-beta" {
-		solanaExplorerBase = "https://solscan.io"
-	}
+	// Determine explorer URL for source chain based on payer chain
+	sourceExplorerBase := s.getSourceChainExplorerURL(intent.PayerChain)
 
 	baseExplorerBase := "https://sepolia.basescan.org"
 	if s.baseNetwork == "base" {
@@ -423,6 +441,7 @@ func (s *PaymentIntentService) GetIntent(intentID string) (*dto.GetIntentRespons
 	response := &dto.GetIntentResponse{
 		IntentID:          intent.IntentID,
 		Status:            intent.Status,
+		PayerChain:        intent.PayerChain,
 		MerchantRecipient: intent.MerchantRecipient,
 		CreatedAt:         intent.CreatedAt.Time,
 		ExpiresAt:         intent.ExpiresAt.Time,
@@ -445,13 +464,14 @@ func (s *PaymentIntentService) GetIntent(intentID string) (*dto.GetIntentRespons
 		response.CompletedAt = &intent.CompletedAt.Time
 	}
 
-	// Add Solana payment details if available
+	// Add source chain payment details if available
 	if intent.SolTxHash.Valid && intent.SolSettleProof.Valid && intent.SolSettledAt.Valid {
-		response.SolanaPayment = &dto.SolanaPayment{
+		response.SourcePayment = &dto.SourcePayment{
+			Chain:       intent.PayerChain,
 			TxHash:      intent.SolTxHash.String,
 			SettleProof: intent.SolSettleProof.String,
 			SettledAt:   intent.SolSettledAt.Time,
-			ExplorerURL: fmt.Sprintf("%s/tx/%s", solanaExplorerBase, intent.SolTxHash.String),
+			ExplorerURL: fmt.Sprintf("%s/tx/%s", sourceExplorerBase, intent.SolTxHash.String),
 		}
 	}
 
@@ -466,4 +486,25 @@ func (s *PaymentIntentService) GetIntent(intentID string) (*dto.GetIntentRespons
 	}
 
 	return response, nil
+}
+
+// getSourceChainExplorerURL returns the explorer URL for the source/payer chain
+func (s *PaymentIntentService) getSourceChainExplorerURL(payerChain string) string {
+	switch payerChain {
+	case "solana":
+		if s.solanaNetwork == "solana-mainnet-beta" {
+			return "https://solscan.io"
+		}
+		return "https://solscan.io?cluster=devnet"
+	case "base":
+		if s.baseNetwork == "base" {
+			return "https://basescan.org"
+		}
+		return "https://sepolia.basescan.org"
+	case "bsc":
+		// BSC explorer
+		return "https://testnet.bscscan.com" // TODO: Add mainnet support via config
+	default:
+		return "https://solscan.io?cluster=devnet"
+	}
 }

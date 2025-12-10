@@ -1,4 +1,4 @@
-.PHONY: help build run test clean docker-build docker-run dev lint fmt
+.PHONY: help build run test clean docker-build docker-run dev lint fmt migrate-up migrate-down migrate-status migrate-create migrate-reset
 
 help: ## Display this help message
 	@echo "Available commands:"
@@ -58,3 +58,26 @@ install-tools: ## Install development tools
 	@echo "Installing development tools..."
 	go install github.com/cosmtrek/air@latest
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/pressly/goose/v3/cmd/goose@latest
+
+# Database migrations (using goose)
+migrate-up: ## Run all pending migrations
+	@echo "Running migrations..."
+	goose -dir db/migrations postgres "$(DATABASE_URL)" up
+
+migrate-down: ## Rollback the last migration
+	@echo "Rolling back last migration..."
+	goose -dir db/migrations postgres "$(DATABASE_URL)" down
+
+migrate-status: ## Show migration status
+	@echo "Migration status..."
+	goose -dir db/migrations postgres "$(DATABASE_URL)" status
+
+migrate-create: ## Create a new migration (usage: make migrate-create name=migration_name)
+	@echo "Creating migration $(name)..."
+	goose -dir db/migrations create $(name) sql
+
+migrate-reset: ## Reset all migrations (down then up)
+	@echo "Resetting all migrations..."
+	goose -dir db/migrations postgres "$(DATABASE_URL)" reset
+	goose -dir db/migrations postgres "$(DATABASE_URL)" up

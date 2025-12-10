@@ -24,8 +24,12 @@ type Config struct {
 	SolanaNetwork         string
 
 	// Base Chain
-	BaseNetwork        string
+	BaseNetwork         string
+	BaseSourceNetwork   string // Network for Base as payer chain
 	BaseProxyPrivateKey string
+
+	// BSC Chain
+	BSCNetwork string
 
 	// CORS
 	CORSOrigins []string
@@ -58,7 +62,9 @@ func Load() (*Config, error) {
 		SolanaReceiverAddress: getEnv("SOLANA_RECEIVER_ADDRESS", ""),
 		SolanaNetwork:         getEnv("SOLANA_NETWORK", "solana-devnet"),
 		BaseNetwork:           getEnv("BASE_NETWORK", "base-sepolia"),
+		BaseSourceNetwork:     getEnv("BASE_SOURCE_NETWORK", "base-sepolia"),
 		BaseProxyPrivateKey:   getEnv("BASE_PROXY_PRIVATE_KEY", ""),
+		BSCNetwork:            getEnv("BSC_NETWORK", "bsc-testnet"),
 		CORSOrigins:           getEnvAsSlice("CORS_ORIGINS", []string{"http://localhost:3000"}),
 		FacilitatorURL:        getEnv("FACILITATOR_URL", "https://x402.org/facilitator"),
 		PrivyAppID:            getEnv("PRIVY_APP_ID", ""),
@@ -110,6 +116,17 @@ func (c *Config) Validate() error {
 	}
 	if !validBaseNetworks[c.BaseNetwork] {
 		return fmt.Errorf("BASE_NETWORK must be one of: base-sepolia, base")
+	}
+	if !validBaseNetworks[c.BaseSourceNetwork] {
+		return fmt.Errorf("BASE_SOURCE_NETWORK must be one of: base-sepolia, base")
+	}
+
+	validBSCNetworks := map[string]bool{
+		"bsc-testnet": true,
+		"bsc":         true,
+	}
+	if !validBSCNetworks[c.BSCNetwork] {
+		return fmt.Errorf("BSC_NETWORK must be one of: bsc-testnet, bsc")
 	}
 
 	// Validate Privy credentials

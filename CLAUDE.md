@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from Solana to Base using the X402 protocol. Users pay on Solana using either an email address or wallet address as receiver. Emails are resolved to Base wallets via Privy. Merchants receive USDC on Base chain.
+X402 Cross-Chain Payment API Backend (Go) - Enables cross-chain payments from multiple source chains (Solana, Base, BSC) to Base using the X402 protocol. Users can pay on their preferred chain using either an email address or wallet address as receiver. Emails are resolved to Base wallets via Privy. Merchants always receive USDC on Base chain.
 
 ## Development Commands
 
@@ -21,6 +21,12 @@ go build -o bin/server ./cmd/server
 # Database
 docker-compose up -d          # Start PostgreSQL
 sqlc generate                 # Generate Go code from SQL
+
+# Database Migrations (goose)
+make migrate-up               # Run all pending migrations
+make migrate-down             # Rollback the last migration
+make migrate-status           # Show migration status
+make migrate-create name=xxx  # Create a new migration
 
 # Test
 make test                     # Run unit tests
@@ -51,24 +57,26 @@ make install-tools            # Install air and golangci-lint
 
 **Option 1 - Email (resolves to wallet via Privy):**
 ```json
-{ "email": "receiver@example.com", "amount": "10.00" }
+{ "email": "receiver@example.com", "amount": "10.00", "payer_chain": "solana" }
 ```
 
 **Option 2 - Direct Wallet Address:**
 ```json
-{ "recipient": "0x742d35Cc...", "amount": "10.00" }
+{ "recipient": "0x742d35Cc...", "amount": "10.00", "payer_chain": "base" }
 ```
+
+**Supported Payer Chains:** `solana`, `base`, `bsc` (default: `solana`)
 
 ### Payment Flow
 
 ```
-1. POST /intents (email OR recipient + amount)
+1. POST /intents (email OR recipient + amount + payer_chain)
    → If email: resolve to Base wallet via Privy
    → If recipient: use wallet address directly
    → Create intent in AWAITING_PAYMENT status
-   → Return intent_id + wallet address
+   → Return intent_id + wallet address + payer_chain
 
-2. Client completes X402 payment on Solana (external)
+2. Client completes X402 payment on selected chain (external)
 
 3. POST /intents/{intent_id} (settle_proof)
    → Validate proof matches intent (amount)
@@ -77,11 +85,11 @@ make install-tools            # Install air and golangci-lint
 
 4. Async Processing (goroutine):
    PENDING → VERIFICATION_FAILED (invalid proof)
-          → SOL_SETTLED (proof verified on-chain)
+          → SOURCE_SETTLED (proof verified on selected chain)
                 ↓
           BASE_SETTLING
                 ↓
-          BASE_SETTLED (success) / SOL_SETTLED (rollback)
+          BASE_SETTLED (success) / SOURCE_SETTLED (rollback)
 
 5. AWAITING_PAYMENT/PENDING → EXPIRED (10 min timeout)
 ```
@@ -91,11 +99,10 @@ make install-tools            # Install air and golangci-lint
 ```
 ├── cmd/server/main.go              # Entry point, router setup
 ├── db/
-│   ├── migrations/                 # SQL migration files
-│   │   ├── 000001_create_payment_intents.up.sql
-│   │   ├── 000001_create_payment_intents.down.sql
-│   │   ├── 000002_create_email_wallets.up.sql
-│   │   └── 000002_create_email_wallets.down.sql
+│   ├── db.go                       # Embedded migrations (goose)
+│   ├── migrations/                 # SQL migration files (goose format)
+│   │   ├── 00001_create_payment_intents.sql
+│   │   └── 00002_create_email_wallets.sql
 │   └── query/                      # sqlc query files
 │       ├── payment_intent.sql
 │       └── email_wallet.sql
@@ -138,20 +145,20 @@ make install-tools            # Install air and golangci-lint
 - `gin-gonic/gin` - HTTP router
 - `jackc/pgx/v5` - PostgreSQL driver
 - `sqlc` - Type-safe SQL code generation
-- `golang-migrate/migrate` - Database migrations
+- `pressly/goose/v3` - Database migrations (embedded)
 - `ethereum/go-ethereum` - Base chain integration
 - `coinbase/x402/go` - X402 facilitator client
 
-### Database (sqlc + golang-migrate)
+### Database (sqlc + goose)
 
-SQL migrations in `db/migrations/`, queries in `db/query/`. Run `sqlc generate` to regenerate Go code.
+SQL migrations in `db/migrations/` (goose format with `-- +goose Up/Down` directives), queries in `db/query/`. Run `sqlc generate` to regenerate Go code. Migrations are embedded and run automatically on startup.
 
 **Tables:**
 - `payment_intents` - Payment intent records with status tracking
 - `email_wallets` - Email-to-wallet mapping cache
 
 **Status Constants** (in `internal/services/payment_intent.go`):
-- `AWAITING_PAYMENT`, `PENDING`, `VERIFICATION_FAILED`, `SOL_SETTLED`, `BASE_SETTLING`, `BASE_SETTLED`, `EXPIRED`
+- `AWAITING_PAYMENT`, `PENDING`, `VERIFICATION_FAILED`, `SOURCE_SETTLED`, `BASE_SETTLING`, `BASE_SETTLED`, `EXPIRED`
 
 ## Key Implementation Details
 
@@ -197,13 +204,17 @@ PORT=3001
 # Database (PostgreSQL only)
 DATABASE_URL=postgresql://x402:x402_dev_password@localhost:5432/x402_payments?sslmode=disable
 
-# Solana
+# Solana (as payer chain)
 SOLANA_RECEIVER_ADDRESS=Your_Solana_Address
 SOLANA_NETWORK=solana-devnet          # solana-devnet | solana-mainnet-beta
 
-# Base Chain
-BASE_NETWORK=base-sepolia             # base-sepolia | base
+# Base Chain (as target and optionally as payer chain)
+BASE_NETWORK=base-sepolia             # base-sepolia | base (target chain)
+BASE_SOURCE_NETWORK=base-sepolia      # base-sepolia | base (when Base is payer chain)
 BASE_PROXY_PRIVATE_KEY=0x...          # 0x + 64 hex chars
+
+# BSC (as payer chain)
+BSC_NETWORK=bsc-testnet               # bsc-testnet | bsc
 
 # Privy (for email-to-wallet)
 PRIVY_APP_ID=your-privy-app-id
@@ -220,10 +231,10 @@ The proxy wallet must have ETH for gas and sufficient USDC balance.
 ### Local Testing Website
 
 Open `test.html` in a browser to test the API:
-1. Choose email or wallet address → Enter amount → Create intent
-2. Complete X402 payment externally
+1. Select payer chain (Solana/Base/BSC) → Choose email or wallet address → Enter amount → Create intent
+2. Complete X402 payment on selected chain externally
 3. Submit proof → Trigger async processing
-4. Poll for status updates
+4. Poll for status updates until BASE_SETTLED
 
 ### Unit Tests
 

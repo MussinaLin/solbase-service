@@ -1,15 +1,16 @@
 # X402 Cross-Chain Payment API Backend (Go)
 
-> Go backend API for X402 cross-chain payment protocol (Solana → Base)
+> Go backend API for X402 cross-chain payment protocol (Solana/Base/BSC → Base)
 >
 > **For client-side developers, try [X402 Cross-Chain Payment SDK](https://github.com/agent-tech/solbase-sdk) to integrate this service to your product.**
 
 ## Project Overview
 
-Clean, production-ready Go backend that provides REST API endpoints for the X402 cross-chain payment SDK. It enables users to pay on Solana using either email addresses or wallet addresses as receivers. Emails are automatically resolved to Base chain wallets via Privy.
+Clean, production-ready Go backend that provides REST API endpoints for the X402 cross-chain payment SDK. It enables users to pay on multiple chains (Solana, Base, BSC) using either email addresses or wallet addresses as receivers. Emails are automatically resolved to Base chain wallets via Privy. All payments are settled on Base chain.
 
 ### Features
 
+- **Multi-Chain Support** - Pay on Solana, Base, or BSC → receive on Base
 - **Email-to-Wallet Payments** - Send USDC to Base using just an email address
 - **Direct Wallet Payments** - Or send directly to a Base wallet address
 - **Privy Integration** - Automatic wallet creation and management via Privy API
@@ -17,7 +18,7 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 - **Proof Validation** - Validates X402 proof matches intent before processing
 - **On-Chain Verification** - Uses X402 facilitator to verify on-chain transactions
 - **Base Chain Integration** - USDC transfers using go-ethereum
-- **sqlc + PostgreSQL** - Type-safe SQL queries with migrations
+- **sqlc + PostgreSQL** - Type-safe SQL queries with goose migrations
 - **Testing Website** - Built-in HTML tester for API endpoints
 
 ## Quick Start
@@ -27,6 +28,7 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 - Go >= 1.23
 - PostgreSQL (via Docker recommended)
 - sqlc (`brew install sqlc`)
+- goose (`go install github.com/pressly/goose/v3/cmd/goose@latest`)
 - Privy account (for email-to-wallet feature)
 
 ### Installation
@@ -78,7 +80,8 @@ Create a payment intent with receiver's email address OR wallet address. Returns
 ```json
 {
   "email": "receiver@example.com",
-  "amount": "10.00"
+  "amount": "10.00",
+  "payer_chain": "solana"
 }
 ```
 
@@ -86,9 +89,12 @@ Create a payment intent with receiver's email address OR wallet address. Returns
 ```json
 {
   "recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
-  "amount": "10.00"
+  "amount": "10.00",
+  "payer_chain": "base"
 }
 ```
+
+**Supported Payer Chains:** `solana`, `base`, `bsc` (default: `solana`)
 
 **Response:**
 ```json
@@ -97,6 +103,7 @@ Create a payment intent with receiver's email address OR wallet address. Returns
   "email": "receiver@example.com",
   "merchant_recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
   "amount": "10.00",
+  "payer_chain": "solana",
   "status": "AWAITING_PAYMENT",
   "created_at": "2024-01-15T10:30:00Z",
   "expires_at": "2024-01-15T10:40:00Z"
@@ -137,12 +144,14 @@ Poll this endpoint to track payment progress.
   "intent_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "BASE_SETTLED",
   "amount": "10.00",
+  "payer_chain": "solana",
   "merchant_recipient": "0x742d35Cc...",
   "receiver_email": "receiver@example.com",
   "payer_wallet": "0xabc123...",
   "created_at": "2024-01-15T10:30:00Z",
   "completed_at": "2024-01-15T10:31:30Z",
-  "solana_payment": {
+  "source_payment": {
+    "chain": "solana",
     "tx_hash": "5abc...",
     "settle_proof": "eyJ...",
     "settled_at": "2024-01-15T10:30:30Z",
@@ -160,14 +169,14 @@ Poll this endpoint to track payment progress.
 ## Payment Flow
 
 ```
-1. POST /intents (email OR recipient + amount)
+1. POST /intents (email OR recipient + amount + payer_chain)
    ↓
    If email: resolve → Base wallet via Privy
    If recipient: use wallet directly
    ↓
    AWAITING_PAYMENT ────────────────────> EXPIRED (10 min timeout)
 
-2. Client completes X402 payment on Solana (external)
+2. Client completes X402 payment on selected chain (Solana/Base/BSC)
 
 3. POST /intents/{intent_id} (settle_proof)
    ↓
@@ -175,11 +184,11 @@ Poll this endpoint to track payment progress.
    ↓
    PENDING
    │
-   │ (goroutine: verify X402 proof on-chain)
+   │ (goroutine: verify X402 proof on selected chain)
    │
    ├──> VERIFICATION_FAILED (invalid proof)
    │
-   └──> SOL_SETTLED (proof verified)
+   └──> SOURCE_SETTLED (proof verified)
               │
               │ (goroutine: execute Base payment)
               │
@@ -187,7 +196,7 @@ Poll this endpoint to track payment progress.
                         │
                         ├──> BASE_SETTLED (success)
                         │
-                        └──> SOL_SETTLED (rollback on failure)
+                        └──> SOURCE_SETTLED (rollback on failure)
 ```
 
 ## Project Structure
@@ -196,7 +205,8 @@ Poll this endpoint to track payment progress.
 .
 ├── cmd/server/main.go              # Application entry point
 ├── db/
-│   ├── migrations/                 # SQL migration files
+│   ├── db.go                       # Embedded migrations (goose)
+│   ├── migrations/                 # SQL migration files (goose format)
 │   └── query/                      # sqlc query definitions
 ├── sqlc.yaml                       # sqlc configuration
 ├── internal/
@@ -246,6 +256,8 @@ DATABASE_URL=postgresql://x402:x402_dev_password@localhost:5432/x402_payments?ss
 SOLANA_RECEIVER_ADDRESS=Your_Solana_Address
 SOLANA_NETWORK=solana-devnet
 BASE_NETWORK=base-sepolia
+BASE_SOURCE_NETWORK=base-sepolia
+BSC_NETWORK=bsc-testnet
 BASE_PROXY_PRIVATE_KEY=0xYourPrivateKey
 PRIVY_APP_ID=your-privy-app-id
 PRIVY_APP_SECRET=your-privy-app-secret
@@ -258,6 +270,14 @@ FACILITATOR_URL=https://x402.org/facilitator
 LOG_LEVEL=debug
 CORS_ORIGINS=http://localhost:3000
 ```
+
+### Network Reference
+
+| Chain | Testnet | Mainnet |
+|-------|---------|---------|
+| Solana | solana-devnet | solana-mainnet-beta |
+| Base | base-sepolia | base |
+| BSC | bsc-testnet | bsc |
 
 ## Development
 
@@ -272,18 +292,25 @@ make test-coverage    # Run tests with coverage report
 make fmt              # Format code
 make lint             # Lint code (requires golangci-lint)
 make tidy             # Tidy go modules
-make install-tools    # Install air and golangci-lint
+make install-tools    # Install air, golangci-lint, and goose
 sqlc generate         # Regenerate Go code from SQL
+
+# Database migrations (goose)
+make migrate-up       # Run all pending migrations
+make migrate-down     # Rollback the last migration
+make migrate-status   # Show migration status
+make migrate-create name=xxx  # Create a new migration
 ```
 
 ### Testing Website
 
 Open `test.html` in a browser to test the API:
-1. Choose email or wallet address
-2. Enter amount and click "Create Intent"
-3. Complete X402 payment to the wallet (external)
-4. Submit the X402 proof
-5. Click "Start Polling" to watch status updates
+1. Select payer chain (Solana/Base/BSC)
+2. Choose email or wallet address
+3. Enter amount and click "Create Intent"
+4. Complete X402 payment on selected chain (external)
+5. Submit the X402 proof
+6. Click "Start Polling" to watch status updates until BASE_SETTLED
 
 ## Deployment
 
@@ -327,7 +354,7 @@ require (
     github.com/ethereum/go-ethereum   // Base chain
     github.com/gin-gonic/gin          // Web framework
     github.com/jackc/pgx/v5           // PostgreSQL driver
-    github.com/golang-migrate/migrate // Database migrations
+    github.com/pressly/goose/v3       // Database migrations
     github.com/sirupsen/logrus        // Logging
 )
 ```

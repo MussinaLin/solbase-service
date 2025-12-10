@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	dbmigrations "github.com/agent-tech/x402-api-backend/db"
 	"github.com/agent-tech/x402-api-backend/internal/config"
 	"github.com/agent-tech/x402-api-backend/internal/database"
 	"github.com/agent-tech/x402-api-backend/internal/handlers"
@@ -19,6 +20,10 @@ import (
 )
 
 func main() {
+	// Set up embedded migrations for the database package
+	database.MigrationsFS = dbmigrations.Migrations
+	database.MigrationsDir = "migrations"
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -44,8 +49,13 @@ func main() {
 	// Initialize services
 	log.Info("Initializing services...")
 
-	// X402 verifier
-	x402Verifier := services.NewX402Verifier(cfg.FacilitatorURL, cfg.SolanaNetwork)
+	// X402 verifier (supports multiple source chains)
+	x402Verifier := services.NewX402Verifier(
+		cfg.FacilitatorURL,
+		cfg.SolanaNetwork,
+		cfg.BaseSourceNetwork,
+		cfg.BSCNetwork,
+	)
 
 	// Base payment service
 	basePaymentService, err := services.NewBasePaymentService(cfg.BaseNetwork, cfg.BaseProxyPrivateKey)

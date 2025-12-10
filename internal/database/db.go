@@ -2,15 +2,22 @@ package database
 
 import (
 	"context"
+	"database/sql"
+	"embed"
 	"fmt"
 
 	"github.com/agent-tech/x402-api-backend/internal/db"
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	log "github.com/sirupsen/logrus"
 )
+
+// MigrationsFS holds the embedded migrations filesystem (set by main package)
+var MigrationsFS embed.FS
+
+// MigrationsDir is the directory path within the embedded FS
+var MigrationsDir string = "db/migrations"
 
 // Database wraps pgxpool and sqlc queries
 type Database struct {
@@ -49,7 +56,7 @@ func Connect(databaseURL string, logLevel string) (*Database, error) {
 	log.Info("Database connection established successfully")
 
 	// Run migrations
-	if err := RunMigrations(databaseURL); err != nil {
+	if err := RunMigrations(pool); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("migrations failed: %w", err)
 	}
@@ -66,20 +73,39 @@ func Connect(databaseURL string, logLevel string) (*Database, error) {
 	return database, nil
 }
 
-// RunMigrations runs database migrations using golang-migrate
-func RunMigrations(databaseURL string) error {
+// RunMigrations runs database migrations using goose with embedded migrations
+func RunMigrations(pool *pgxpool.Pool) error {
 	log.Info("Running database migrations...")
 
-	m, err := migrate.New(
-		"file://db/migrations",
-		databaseURL,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create migration instance: %w", err)
-	}
-	defer m.Close()
+	// Create a *sql.DB from the pgxpool for goose
+	sqlDB := stdlib.OpenDBFromPool(pool)
 
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	// Set up goose to use embedded migrations
+	goose.SetBaseFS(MigrationsFS)
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(sqlDB, MigrationsDir); err != nil {
+		return fmt.Errorf("migration failed: %w", err)
+	}
+
+	log.Info("Database migrations completed successfully")
+	return nil
+}
+
+// RunMigrationsWithDB runs migrations with a *sql.DB (for CLI usage)
+func RunMigrationsWithDB(sqlDB *sql.DB) error {
+	log.Info("Running database migrations...")
+
+	goose.SetBaseFS(MigrationsFS)
+
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(sqlDB, MigrationsDir); err != nil {
 		return fmt.Errorf("migration failed: %w", err)
 	}
 

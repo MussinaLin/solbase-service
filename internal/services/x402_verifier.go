@@ -12,8 +12,10 @@ import (
 
 // X402Verifier handles X402 proof verification
 type X402Verifier struct {
-	client        *facilitatorclient.FacilitatorClient
-	solanaNetwork string
+	client            *facilitatorclient.FacilitatorClient
+	solanaNetwork     string
+	baseSourceNetwork string
+	bscNetwork        string
 }
 
 // ProofDetails contains extracted information from a verified X402 proof
@@ -24,7 +26,7 @@ type ProofDetails struct {
 }
 
 // NewX402Verifier creates a new X402 verifier instance
-func NewX402Verifier(facilitatorURL string, solanaNetwork string) *X402Verifier {
+func NewX402Verifier(facilitatorURL string, solanaNetwork string, baseSourceNetwork string, bscNetwork string) *X402Verifier {
 	config := &types.FacilitatorConfig{
 		URL: facilitatorURL,
 		Timeout: func() time.Duration {
@@ -39,13 +41,31 @@ func NewX402Verifier(facilitatorURL string, solanaNetwork string) *X402Verifier 
 	client := facilitatorclient.NewFacilitatorClient(config)
 
 	log.WithFields(log.Fields{
-		"facilitator_url": facilitatorURL,
-		"solana_network":  solanaNetwork,
+		"facilitator_url":     facilitatorURL,
+		"solana_network":      solanaNetwork,
+		"base_source_network": baseSourceNetwork,
+		"bsc_network":         bscNetwork,
 	}).Info("X402 verifier initialized")
 
 	return &X402Verifier{
-		client:        client,
-		solanaNetwork: solanaNetwork,
+		client:            client,
+		solanaNetwork:     solanaNetwork,
+		baseSourceNetwork: baseSourceNetwork,
+		bscNetwork:        bscNetwork,
+	}
+}
+
+// getNetworkForChain returns the appropriate network string for the given payer chain
+func (v *X402Verifier) getNetworkForChain(payerChain string) (string, error) {
+	switch payerChain {
+	case "solana":
+		return v.solanaNetwork, nil
+	case "base":
+		return v.baseSourceNetwork, nil
+	case "bsc":
+		return v.bscNetwork, nil
+	default:
+		return "", fmt.Errorf("unsupported payer chain: %s", payerChain)
 	}
 }
 
@@ -143,8 +163,17 @@ func (v *X402Verifier) SettlePayment(settleProof string, amount string, merchant
 
 // VerifyAndExtractDetails verifies an X402 proof and extracts payment details
 // This is used in the proof-first flow where we need to extract amount from the proof
-func (v *X402Verifier) VerifyAndExtractDetails(settleProof string, merchantRecipient string) (*ProofDetails, error) {
-	log.WithField("recipient", merchantRecipient).Info("Verifying X402 proof and extracting details")
+func (v *X402Verifier) VerifyAndExtractDetails(settleProof string, merchantRecipient string, payerChain string) (*ProofDetails, error) {
+	log.WithFields(log.Fields{
+		"recipient":   merchantRecipient,
+		"payer_chain": payerChain,
+	}).Info("Verifying X402 proof and extracting details")
+
+	// Get the appropriate network for the payer chain
+	network, err := v.getNetworkForChain(payerChain)
+	if err != nil {
+		return nil, err
+	}
 
 	// Decode the payment payload from base64-encoded proof
 	payload, err := types.DecodePaymentPayloadFromBase64(settleProof)
@@ -156,7 +185,7 @@ func (v *X402Verifier) VerifyAndExtractDetails(settleProof string, merchantRecip
 	// Create payment requirements
 	requirements := &types.PaymentRequirements{
 		Scheme:  "exact-evm",
-		Network: v.solanaNetwork,
+		Network: network,
 		PayTo:   merchantRecipient,
 	}
 

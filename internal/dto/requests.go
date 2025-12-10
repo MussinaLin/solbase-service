@@ -5,9 +5,10 @@ import "time"
 // CreateIntentRequest represents the request to create a payment intent
 // Either email or recipient must be provided, but not both
 type CreateIntentRequest struct {
-	Email     string `json:"email"`                        // Email address (resolves to wallet via Privy)
-	Recipient string `json:"recipient"`                    // Direct wallet address
-	Amount    string `json:"amount" binding:"required"`
+	Email      string `json:"email"`                     // Email address (resolves to wallet via Privy)
+	Recipient  string `json:"recipient"`                 // Direct wallet address
+	Amount     string `json:"amount" binding:"required"`
+	PayerChain string `json:"payer_chain"`               // Optional: "solana", "base", "bsc" (default: solana)
 }
 
 // CreateIntentResponse represents the response after creating an intent
@@ -16,6 +17,7 @@ type CreateIntentResponse struct {
 	Email             *string   `json:"email,omitempty"` // Only present if email was provided
 	MerchantRecipient string    `json:"merchant_recipient"`
 	Amount            string    `json:"amount"`
+	PayerChain        string    `json:"payer_chain"`
 	Status            string    `json:"status"`
 	CreatedAt         time.Time `json:"created_at"`
 	ExpiresAt         time.Time `json:"expires_at"`
@@ -40,8 +42,9 @@ type QueryIntentRequest struct {
 	IntentID string `form:"intent_id" binding:"required,uuid4"`
 }
 
-// SolanaPayment represents Solana payment details
-type SolanaPayment struct {
+// SourcePayment represents payment details on the source/payer chain (Solana, Base, BSC)
+type SourcePayment struct {
+	Chain       string    `json:"chain"` // "solana", "base", "bsc"
 	TxHash      string    `json:"tx_hash"`
 	SettleProof string    `json:"settle_proof"`
 	SettledAt   time.Time `json:"settled_at"`
@@ -61,6 +64,7 @@ type GetIntentResponse struct {
 	IntentID          string         `json:"intent_id"`
 	Status            string         `json:"status"`
 	Amount            *string        `json:"amount,omitempty"`
+	PayerChain        string         `json:"payer_chain"`
 	MerchantRecipient string         `json:"merchant_recipient"`
 	ReceiverEmail     *string        `json:"receiver_email,omitempty"`
 	PayerWallet       *string        `json:"payer_wallet,omitempty"`
@@ -68,8 +72,8 @@ type GetIntentResponse struct {
 	CreatedAt         time.Time      `json:"created_at"`
 	ExpiresAt         time.Time      `json:"expires_at"`
 	CompletedAt       *time.Time     `json:"completed_at,omitempty"`
-	SolanaPayment     *SolanaPayment `json:"solana_payment,omitempty"`
-	BasePayment       *BasePayment   `json:"base_payment,omitempty"`
+	SourcePayment     *SourcePayment `json:"source_payment,omitempty"` // Payment on payer chain (Solana/Base/BSC)
+	BasePayment       *BasePayment   `json:"base_payment,omitempty"`   // Settlement on Base
 }
 
 // HealthResponse represents the health check response

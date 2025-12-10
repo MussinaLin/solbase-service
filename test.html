@@ -117,11 +117,43 @@
         }
         .AWAITING_PAYMENT { background: #17a2b8; color: white; }
         .PENDING { background: #ffd93d; color: #333; }
-        .SOL_SETTLED { background: #6bcb77; color: white; }
+        .SOURCE_SETTLED { background: #6bcb77; color: white; }
         .BASE_SETTLING { background: #4d96ff; color: white; }
         .BASE_SETTLED { background: #28a745; color: white; }
         .VERIFICATION_FAILED { background: #ff6b6b; color: white; }
         .EXPIRED { background: #6c757d; color: white; }
+        .chain-selector {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .chain-option {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            padding: 10px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            transition: all 0.2s;
+        }
+        .chain-option:hover {
+            border-color: #4a69bd;
+        }
+        .chain-option.selected {
+            border-color: #4a69bd;
+            background: #e7f3ff;
+        }
+        .chain-option input {
+            width: auto;
+            margin-right: 8px;
+            margin-bottom: 0;
+        }
+        .chain-icon {
+            width: 24px;
+            height: 24px;
+            margin-right: 8px;
+            border-radius: 50%;
+        }
         .polling-indicator {
             display: inline-block;
             width: 10px;
@@ -215,10 +247,10 @@
 
     <div class="info-box">
         <h3>Payment Flow</h3>
-        <p><strong>Step 1:</strong> Create payment intent with email or wallet + amount → Get intent details</p>
-        <p><strong>Step 2:</strong> Complete X402 payment to the wallet (external)</p>
+        <p><strong>Step 1:</strong> Select payer chain (Solana/Base/BSC) and create payment intent with email or wallet + amount</p>
+        <p><strong>Step 2:</strong> Complete X402 payment on the selected chain (external)</p>
         <p><strong>Step 3:</strong> Submit X402 proof to the backend</p>
-        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED</p>
+        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED (funds transferred to Base)</p>
     </div>
 
     <div class="info-box">
@@ -234,6 +266,23 @@
             <span class="step-number">1</span>
             <h2>Create Payment Intent</h2>
         </div>
+
+        <label>Payer Chain (where user pays):</label>
+        <div class="chain-selector">
+            <label class="chain-option selected" onclick="selectChain('solana', this)">
+                <input type="radio" name="payerChain" value="solana" checked>
+                <span>Solana</span>
+            </label>
+            <label class="chain-option" onclick="selectChain('base', this)">
+                <input type="radio" name="payerChain" value="base">
+                <span>Base</span>
+            </label>
+            <label class="chain-option" onclick="selectChain('bsc', this)">
+                <input type="radio" name="payerChain" value="bsc">
+                <span>BSC</span>
+            </label>
+        </div>
+
         <p>Choose how to specify the receiver: by email (resolves to wallet via Privy) or direct wallet address.</p>
 
         <div class="receiver-type-selector">
@@ -267,10 +316,11 @@
         <div id="walletInfo" class="wallet-info" style="display:none;">
             <h4>Payment Details</h4>
             <p><strong>Intent ID:</strong> <span id="createdIntentId"></span></p>
-            <p><strong>Receiver Wallet:</strong></p>
+            <p><strong>Payer Chain:</strong> <span id="payerChainDisplay" style="font-weight: bold; text-transform: uppercase;"></span></p>
+            <p><strong>Receiver Wallet (Base):</strong></p>
             <p class="wallet-address" id="receiverWallet"></p>
             <p><strong>Amount:</strong> <span id="paymentAmountDisplay"></span> USDC</p>
-            <p style="margin-top: 10px; font-style: italic; color: #666;">Use this wallet address as the recipient for your X402 payment on Solana.</p>
+            <p style="margin-top: 10px; font-style: italic; color: #666;">Complete your X402 payment on <span id="chainInstructions">Solana</span>, then submit the proof below.</p>
         </div>
     </div>
 
@@ -343,6 +393,15 @@
             document.getElementById('walletInput').classList.toggle('hidden', isEmail);
         }
 
+        function selectChain(chain, element) {
+            // Update radio button
+            document.querySelector(`input[name="payerChain"][value="${chain}"]`).checked = true;
+
+            // Update visual selection
+            document.querySelectorAll('.chain-option').forEach(opt => opt.classList.remove('selected'));
+            element.classList.add('selected');
+        }
+
         function showResult(elementId, content) {
             const el = document.getElementById(elementId);
             el.style.display = 'block';
@@ -351,6 +410,7 @@
 
         async function createIntent() {
             const receiverType = document.querySelector('input[name="receiverType"]:checked').value;
+            const payerChain = document.querySelector('input[name="payerChain"]:checked').value;
             const amount = document.getElementById('paymentAmount').value.trim();
 
             if (!amount) {
@@ -358,7 +418,10 @@
                 return;
             }
 
-            let requestBody = { amount: amount };
+            let requestBody = {
+                amount: amount,
+                payer_chain: payerChain
+            };
 
             if (receiverType === 'email') {
                 const email = document.getElementById('receiverEmail').value.trim();
@@ -390,8 +453,13 @@
                     // Show wallet info
                     document.getElementById('walletInfo').style.display = 'block';
                     document.getElementById('createdIntentId').textContent = data.intent_id;
+                    document.getElementById('payerChainDisplay').textContent = data.payer_chain || payerChain;
                     document.getElementById('receiverWallet').textContent = data.merchant_recipient;
                     document.getElementById('paymentAmountDisplay').textContent = data.amount;
+
+                    // Update chain instructions
+                    const chainName = (data.payer_chain || payerChain).charAt(0).toUpperCase() + (data.payer_chain || payerChain).slice(1);
+                    document.getElementById('chainInstructions').textContent = chainName;
 
                     // Pre-fill other fields
                     document.getElementById('intentIdForProof').value = data.intent_id;
