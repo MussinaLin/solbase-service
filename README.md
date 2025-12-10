@@ -35,33 +35,43 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 ### Prerequisites
 
 - Go >= 1.23
-- PostgreSQL (via Docker recommended)
+- Docker & Docker Compose (for PostgreSQL)
 - sqlc (`brew install sqlc`)
 - goose (`go install github.com/pressly/goose/v3/cmd/goose@latest`)
-- Privy account (for email-to-wallet feature)
+- Privy account (for email-to-wallet feature) - [Sign up at privy.io](https://privy.io)
 
 ### Installation
 
-```bash
-# Start PostgreSQL
-docker-compose up -d
+1. **Clone and install dependencies**
+   ```bash
+   git clone <repo-url>
+   cd solbase-service
+   go mod download
+   ```
 
-# Install dependencies
-go mod download
+2. **Start PostgreSQL**
+   ```bash
+   docker-compose up -d
+   ```
 
-# Copy environment variables
-cp .env.example .env
-# Edit .env with your configuration
+3. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your configuration (see Environment Variables section)
+   ```
 
-# Generate sqlc code (if needed)
-make sqlc
-# Or: cd database && sqlc generate
+4. **Run the application**
+   ```bash
+   make run
+   # Or: go run ./cmd/api/main.go
+   ```
+   > **Note:** Database migrations run automatically on startup. For manual control, use `make migrate-up` / `make migrate-down`.
 
-# Run the application
-make run
-# Or directly:
-go run ./cmd/api/main.go
-```
+5. **Verify installation**
+   ```bash
+   curl http://localhost:3001/health
+   # Expected: {"status":"ok","info":{"database":{"status":"up"},...}}
+   ```
 
 The API will be available at `http://localhost:3001`
 
@@ -264,24 +274,39 @@ Migrations run automatically on startup.
 ### Required
 
 ```env
-PORT=3001
+# Server
+PORT=3001                              # HTTP server port
+
+# Database
 DATABASE_URL=postgresql://x402:x402_dev_password@localhost:5432/x402_payments?sslmode=disable
-SOLANA_RECEIVER_ADDRESS=Your_Solana_Address
-SOLANA_NETWORK=solana-devnet
-BASE_NETWORK=base-sepolia
-BASE_SOURCE_NETWORK=base-sepolia
-BSC_NETWORK=bsc-testnet
-BASE_PROXY_PRIVATE_KEY=0xYourPrivateKey
-PRIVY_APP_ID=your-privy-app-id
-PRIVY_APP_SECRET=your-privy-app-secret
+
+# Solana (when used as payer chain)
+SOLANA_RECEIVER_ADDRESS=Your_Solana_Address    # X402 payment receiver on Solana
+SOLANA_NETWORK=solana-devnet                   # solana-devnet | solana-mainnet-beta
+
+# Base Chain (settlement destination)
+BASE_NETWORK=base-sepolia                      # base-sepolia | base
+
+# Base Chain (when used as payer chain)
+BASE_SOURCE_NETWORK=base-sepolia               # base-sepolia | base
+
+# BSC (when used as payer chain)
+BSC_NETWORK=bsc-testnet                        # bsc-testnet | bsc
+
+# Proxy Wallet (CRITICAL - must have ETH for gas + USDC for transfers)
+BASE_PROXY_PRIVATE_KEY=0xYourPrivateKey        # Private key for USDC transfers on Base
+
+# Privy (email-to-wallet resolution)
+PRIVY_APP_ID=your-privy-app-id                 # From Privy dashboard
+PRIVY_APP_SECRET=your-privy-app-secret         # From Privy dashboard
 ```
 
 ### Optional
 
 ```env
-FACILITATOR_URL=https://x402.org/facilitator
-LOG_LEVEL=debug
-CORS_ORIGINS=http://localhost:3000
+FACILITATOR_URL=https://x402.org/facilitator   # X402 proof verification endpoint
+LOG_LEVEL=debug                                # error | warn | info | debug
+CORS_ORIGINS=http://localhost:3000             # Comma-separated allowed origins
 ```
 
 ### Network Reference
@@ -291,6 +316,33 @@ CORS_ORIGINS=http://localhost:3000
 | Solana | solana-devnet | solana-mainnet-beta |
 | Base | base-sepolia | base |
 | BSC | bsc-testnet | bsc |
+
+## Wallet Setup
+
+### Proxy Wallet Requirements
+
+The `BASE_PROXY_PRIVATE_KEY` wallet executes USDC transfers on Base chain. It must have:
+
+- **ETH** - For gas fees (~0.01 ETH recommended for testnet)
+- **USDC** - Balance to cover payment amounts
+
+### Getting Testnet Funds
+
+**Base Sepolia:**
+- ETH Faucet: https://www.alchemy.com/faucets/base-sepolia
+- USDC Contract: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
+  - Get testnet USDC from [Coinbase Faucet](https://faucet.circle.com/) or bridge from other testnets
+
+**Solana Devnet:**
+- SOL Faucet: `solana airdrop 2` (with [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools))
+- USDC: Devnet USDC requires minting from test programs
+
+### Setting Up Privy
+
+1. Create account at [privy.io](https://privy.io)
+2. Create a new app in the Privy dashboard
+3. Copy **App ID** and **App Secret** to your `.env` file
+4. Enable "Email" as a login method in the dashboard
 
 ## Development
 
@@ -378,6 +430,45 @@ require (
     github.com/sirupsen/logrus        // Logging
 )
 ```
+
+## Troubleshooting
+
+### Common Issues
+
+**Database connection failed**
+```
+Error: failed to connect to database
+```
+- Ensure PostgreSQL is running: `docker-compose ps`
+- Check `DATABASE_URL` in `.env` matches credentials in `docker-compose.yml`
+- Verify port 5432 is not in use: `lsof -i :5432`
+
+**Migration errors**
+```
+Error: migration failed
+```
+- Check database is accessible: `docker-compose logs postgres`
+- Reset migrations if needed: `make migrate-reset`
+- Verify `database/migrations/` directory contains SQL files
+
+**"insufficient funds" on Base payment**
+- Proxy wallet needs both ETH (for gas) and USDC (for transfers)
+- Check wallet balance: [Base Sepolia Explorer](https://sepolia.basescan.org)
+- See [Wallet Setup](#wallet-setup) section for faucet links
+
+**Privy API errors**
+- Verify `PRIVY_APP_ID` and `PRIVY_APP_SECRET` are correct
+- Check Privy dashboard for API status and rate limits
+- Ensure "Email" login method is enabled in Privy dashboard
+
+**X402 verification failed**
+- Ensure `FACILITATOR_URL` is accessible (default: https://x402.org/facilitator)
+- Verify payment was made to the correct address on the correct network
+- Check that the proof matches the intent amount
+
+**CORS errors in browser**
+- Add your frontend URL to `CORS_ORIGINS` in `.env`
+- Example: `CORS_ORIGINS=http://localhost:3000,http://localhost:5173`
 
 ## License
 
