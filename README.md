@@ -204,11 +204,15 @@ Poll this endpoint to track payment progress.
    ↓
    PENDING
    │
-   │ (goroutine: verify X402 proof on selected chain)
+   │ (goroutine: verify X402 proof with facilitator)
    │
    ├──> VERIFICATION_FAILED (invalid proof)
    │
-   └──> SOURCE_SETTLED (proof verified)
+   │ (goroutine: settle payment on source chain via X402 facilitator)
+   │
+   ├──> VERIFICATION_FAILED (settlement failed)
+   │
+   └──> SOURCE_SETTLED (proof verified + settled on source chain, txHash stored)
             │
             │ (goroutine: execute Base payment)
             │
@@ -218,6 +222,9 @@ Poll this endpoint to track payment progress.
                       │
                       └──> SOURCE_SETTLED (rollback on failure)
 ```
+
+**Note:** The settlement step actually executes the payment on the source chain via the X402 facilitator.
+Without settlement, the proof is only verified but funds are not transferred.
 
 ## Project Structure
 
@@ -291,6 +298,7 @@ BASE_NETWORK=base-sepolia                      # base-sepolia | base
 BASE_SOURCE_NETWORK=base-sepolia               # base-sepolia | base
 
 # BSC (when used as payer chain)
+BSC_RECEIVER_ADDRESS=Your_BSC_Address          # X402 payment receiver on BSC
 BSC_NETWORK=bsc-testnet                        # bsc-testnet | bsc
 
 # Proxy Wallet (CRITICAL - must have ETH for gas + USDC for transfers)

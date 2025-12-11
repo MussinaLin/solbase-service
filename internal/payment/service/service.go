@@ -14,12 +14,14 @@ import (
 
 // Service implements the payment.Service interface.
 type Service struct {
-	repo               repository.Repository
-	basePaymentService *BasePaymentService
-	x402Verifier       *X402Verifier
-	privyService       *PrivyService
-	solanaNetwork      string
-	baseNetwork        string
+	repo                  repository.Repository
+	basePaymentService    *BasePaymentService
+	x402Verifier          *X402Verifier
+	privyService          *PrivyService
+	solanaNetwork         string
+	baseNetwork           string
+	solanaReceiverAddress string
+	bscReceiverAddress    string
 }
 
 // Ensure Service implements payment.Service.
@@ -33,14 +35,18 @@ func New(
 	privyService *PrivyService,
 	solanaNetwork string,
 	baseNetwork string,
+	solanaReceiverAddress string,
+	bscReceiverAddress string,
 ) *Service {
 	return &Service{
-		repo:               repo,
-		basePaymentService: basePaymentService,
-		x402Verifier:       x402Verifier,
-		privyService:       privyService,
-		solanaNetwork:      solanaNetwork,
-		baseNetwork:        baseNetwork,
+		repo:                  repo,
+		basePaymentService:    basePaymentService,
+		x402Verifier:          x402Verifier,
+		privyService:          privyService,
+		solanaNetwork:         solanaNetwork,
+		baseNetwork:           baseNetwork,
+		solanaReceiverAddress: solanaReceiverAddress,
+		bscReceiverAddress:    bscReceiverAddress,
 	}
 }
 
@@ -96,11 +102,26 @@ func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntent
 
 	now := time.Now()
 
+	// Set source recipient based on payer chain
+	// For Solana/BSC, users pay to a chain-specific receiver address
+	// For Base, users pay directly to the merchant recipient
+	var sourceRecipient *string
+	switch payerChain {
+	case "solana":
+		sourceRecipient = &s.solanaReceiverAddress
+	case "bsc":
+		sourceRecipient = &s.bscReceiverAddress
+	case "base":
+		// For Base as payer chain, no separate source recipient needed
+		sourceRecipient = nil
+	}
+
 	intent := &payment.Intent{
 		IntentID:          intentID,
 		PayerChain:        payerChain,
 		TargetChain:       "base",
 		MerchantRecipient: walletAddress,
+		SourceRecipient:   sourceRecipient,
 		ReceiverEmail:     email,
 		Amount:            params.Amount,
 		Status:            payment.StatusAwaitingPayment,
@@ -184,7 +205,7 @@ func (s *Service) GetIntent(ctx context.Context, intentID string) (*payment.Inte
 	return intent, nil
 }
 
-// processIntentAsync handles the async verification and Base payment flow.
+// processIntentAsync handles the async verification, settlement, and Base payment flow.
 func (s *Service) processIntentAsync(ctx context.Context, intentID string, settleProof string, merchantRecipient string, payerChain string) {
 	logger := log.WithFields(log.Fields{
 		"intent_id":   intentID,
@@ -201,6 +222,7 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 	default:
 	}
 
+	// Step 1: Verify X402 proof
 	logger.Info("Verifying X402 proof with facilitator")
 
 	details, err := s.x402Verifier.VerifyAndExtractDetails(settleProof, merchantRecipient, payerChain)
@@ -211,8 +233,37 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 		return
 	}
 
-	logger.Info("Proof verified, updating to SOURCE_SETTLED")
+	logger.Info("Proof verified successfully")
 
+	select {
+	case <-ctx.Done():
+		logger.Error("Context cancelled before settlement")
+		s.updateIntentError(intentID, "Processing timeout before settlement")
+
+		return
+	default:
+	}
+
+	// Step 2: Settle payment on source chain via X402 facilitator
+	logger.Info("Settling payment on source chain via X402 facilitator")
+
+	settleResp, err := s.x402Verifier.SettlePaymentForChain(settleProof, merchantRecipient, payerChain)
+	if err != nil {
+		logger.WithError(err).Error("Source chain settlement failed")
+		s.updateIntentError(intentID, fmt.Sprintf("Settlement failed: %s", err.Error()))
+
+		return
+	}
+
+	// Extract transaction hash from settlement response
+	details.TxHash = &settleResp.Transaction
+	if settleResp.Payer != nil {
+		details.PayerWallet = settleResp.Payer
+	}
+
+	logger.WithField("tx_hash", settleResp.Transaction).Info("Source chain settlement successful, updating to SOURCE_SETTLED")
+
+	// Step 3: Update to SOURCE_SETTLED with settlement data
 	if err := s.updateIntentSourceSettled(ctx, intentID, details); err != nil {
 		logger.WithError(err).Error("Failed to update intent to SOURCE_SETTLED")
 
@@ -228,6 +279,7 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 	default:
 	}
 
+	// Step 4: Trigger Base payment
 	logger.Info("Triggering Base payment")
 
 	if err := s.triggerBasePayment(ctx, intentID); err != nil {

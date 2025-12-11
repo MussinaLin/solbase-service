@@ -94,15 +94,25 @@ make install-tools            # Install air and golangci-lint
    → Trigger async processing
 
 4. Async Processing (goroutine):
-   PENDING → VERIFICATION_FAILED (invalid proof)
-          → SOURCE_SETTLED (proof verified on selected chain)
-                ↓
-          BASE_SETTLING
-                ↓
-          BASE_SETTLED (success) / SOURCE_SETTLED (rollback)
+   PENDING
+      ↓
+   [Step 1: Verify X402 proof with facilitator]
+      ↓ (on failure → VERIFICATION_FAILED)
+   [Step 2: Settle payment on source chain via X402 facilitator]
+      ↓ (on failure → VERIFICATION_FAILED)
+   SOURCE_SETTLED (proof verified + settled on source chain, txHash stored)
+      ↓
+   [Step 3: Execute Base payment]
+      ↓
+   BASE_SETTLING
+      ↓
+   BASE_SETTLED (success) / SOURCE_SETTLED (rollback on Base failure)
 
 5. AWAITING_PAYMENT/PENDING → EXPIRED (10 min timeout)
 ```
+
+**Important:** The settlement step (Step 2) actually executes the payment on the source chain.
+Without settlement, the proof is only verified but funds are not transferred.
 
 ### Project Structure
 
@@ -202,15 +212,25 @@ The `PrivyService` (`internal/payment/service/privy.go`) handles email-to-wallet
 3. Compare with intent amount (must match)
 4. On-chain verification is done asynchronously via X402 facilitator
 
-### X402 Proof Verification
+### X402 Proof Verification & Settlement
 
 Uses official SDK (`internal/payment/service/x402_verifier.go`):
 ```go
+// Step 1: Verify proof
 payload, _ := types.DecodePaymentPayloadFromBase64(proof)
 verifyResp, _ := client.Verify(payload, requirements)
+
+// Step 2: Settle payment (executes the payment on source chain)
+settleResp, _ := client.Settle(payload, requirements)
+// Returns: Transaction hash, Network, Payer
 ```
 
 Amount is extracted from `payload.Payload.Authorization.Value` (string, USDC microdollars with 6 decimals).
+
+**Key Methods:**
+- `ValidateProofAmount()` - Validates proof amount matches intent (called synchronously in SubmitProof)
+- `VerifyAndExtractDetails()` - Full verification with facilitator (async)
+- `SettlePaymentForChain()` - Settles payment on source chain via facilitator (async)
 
 ## Environment Variables
 
@@ -231,6 +251,7 @@ BASE_SOURCE_NETWORK=base-sepolia      # base-sepolia | base (when Base is payer 
 BASE_PROXY_PRIVATE_KEY=0x...          # 0x + 64 hex chars
 
 # BSC (as payer chain)
+BSC_RECEIVER_ADDRESS=Your_BSC_Address
 BSC_NETWORK=bsc-testnet               # bsc-testnet | bsc
 
 # Privy (for email-to-wallet)

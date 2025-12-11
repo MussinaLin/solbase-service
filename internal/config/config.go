@@ -29,7 +29,8 @@ type Config struct {
 	BaseProxyPrivateKey string
 
 	// BSC Chain
-	BSCNetwork string
+	BSCReceiverAddress string
+	BSCNetwork         string
 
 	// CORS
 	CORSOrigins []string
@@ -64,6 +65,7 @@ func Load() (*Config, error) {
 		BaseNetwork:           getEnv("BASE_NETWORK", "base-sepolia"),
 		BaseSourceNetwork:     getEnv("BASE_SOURCE_NETWORK", "base-sepolia"),
 		BaseProxyPrivateKey:   getEnv("BASE_PROXY_PRIVATE_KEY", ""),
+		BSCReceiverAddress:    getEnv("BSC_RECEIVER_ADDRESS", ""),
 		BSCNetwork:            getEnv("BSC_NETWORK", "bsc-testnet"),
 		CORSOrigins:           getEnvAsSlice("CORS_ORIGINS", []string{"http://localhost:3000"}),
 		FacilitatorURL:        getEnv("FACILITATOR_URL", "https://x402.org/facilitator"),
@@ -90,6 +92,10 @@ func (c *Config) Validate() error {
 
 	if c.SolanaReceiverAddress == "" {
 		return fmt.Errorf("SOLANA_RECEIVER_ADDRESS is required")
+	}
+
+	if c.BSCReceiverAddress == "" {
+		return fmt.Errorf("BSC_RECEIVER_ADDRESS is required")
 	}
 
 	if c.BaseProxyPrivateKey == "" {

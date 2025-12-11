@@ -41,6 +41,7 @@ type CreateIntentResponse struct {
 	IntentID          string    `json:"intent_id"`
 	Email             *string   `json:"email,omitempty"`
 	MerchantRecipient string    `json:"merchant_recipient"`
+	SourceRecipient   *string   `json:"source_recipient,omitempty"`
 	Amount            string    `json:"amount"`
 	PayerChain        string    `json:"payer_chain"`
 	Status            string    `json:"status"`
@@ -131,6 +132,7 @@ func createIntent(svc *service.Service) httpwrap.HandlerFunc {
 				IntentID:          intent.IntentID,
 				Email:             intent.ReceiverEmail,
 				MerchantRecipient: intent.MerchantRecipient,
+				SourceRecipient:   intent.SourceRecipient,
 				Amount:            intent.Amount,
 				PayerChain:        intent.PayerChain,
 				Status:            intent.Status,

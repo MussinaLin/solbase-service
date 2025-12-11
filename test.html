@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>X402 Cross-Chain Payment API Tester</title>
+    <!-- Web3 Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.9.0/dist/ethers.umd.min.js"></script>
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -276,6 +279,54 @@
         .auto-flow-status.off {
             background: #6c757d;
         }
+        /* Wallet Integration Styles */
+        .wallet-status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .wallet-status.connected {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+        }
+        .wallet-status.disconnected {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+        }
+        .wallet-status.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+        }
+        .wallet-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-left: 8px;
+        }
+        .wallet-badge.metamask {
+            background: #f6851b;
+            color: white;
+        }
+        .wallet-badge.glow {
+            background: #9945FF;
+            color: white;
+        }
+        .wallet-badge.phantom {
+            background: #ab9ff2;
+            color: white;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        button.wallet {
+            background: #9945FF;
+        }
+        button.wallet:hover:not(:disabled) {
+            background: #7c35d9;
+        }
     </style>
 </head>
 <body>
@@ -284,9 +335,9 @@
     <div class="info-box">
         <h3>Payment Flow</h3>
         <p><strong>Step 1:</strong> Select payer chain (Solana/Base/BSC) and create payment intent with email or wallet + amount</p>
-        <p><strong>Step 2:</strong> Complete X402 payment on the selected chain (external)</p>
-        <p><strong>Step 3:</strong> Submit X402 proof to the backend</p>
-        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED (funds transferred to Base)</p>
+        <p><strong>Step 2:</strong> Connect wallet (MetaMask for Base/BSC, Glow/Phantom for Solana) and sign the payment authorization</p>
+        <p><strong>Step 3:</strong> Submit X402 proof to the backend (triggers verification + settlement on source chain)</p>
+        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED (funds settled on source chain, then transferred to Base)</p>
     </div>
 
     <div class="info-box">
@@ -353,19 +404,42 @@
             <h4>Payment Details</h4>
             <p><strong>Intent ID:</strong> <span id="createdIntentId"></span></p>
             <p><strong>Payer Chain:</strong> <span id="payerChainDisplay" style="font-weight: bold; text-transform: uppercase;"></span></p>
-            <p><strong>Receiver Wallet (Base):</strong></p>
+            <p><strong>Final Receiver (Base):</strong></p>
             <p class="wallet-address" id="receiverWallet"></p>
+            <div id="sourceRecipientInfo" style="display:none;">
+                <p><strong>Payment Recipient (<span id="payerChainName"></span>):</strong></p>
+                <p class="wallet-address" id="sourceRecipientWallet"></p>
+            </div>
             <p><strong>Amount:</strong> <span id="paymentAmountDisplay"></span> USDC</p>
-            <p style="margin-top: 10px; font-style: italic; color: #666;">Complete your X402 payment on <span id="chainInstructions">Solana</span>, then submit the proof below.</p>
+            <p style="margin-top: 10px; font-style: italic; color: #666;">Connect your wallet below to sign the payment authorization.</p>
         </div>
+    </div>
+
+    <div class="section" id="walletSection" style="display:none;">
+        <div class="step-title">
+            <span class="step-number">2</span>
+            <h2>Sign Payment with Wallet</h2>
+        </div>
+        <p>Connect your wallet to sign the X402 payment authorization. The facilitator will execute the on-chain transfer.</p>
+
+        <div id="walletStatus" class="wallet-status disconnected">
+            <p><strong>Wallet:</strong> <span id="connectedAddress">Not connected</span></p>
+            <p><strong>Network:</strong> <span id="connectedNetwork">-</span></p>
+            <p><strong>Wallet Type:</strong> <span id="walletType">-</span></p>
+        </div>
+
+        <button onclick="connectWallet()" id="connectWalletBtn" class="wallet">Connect Wallet</button>
+        <button onclick="signAndGenerateProof()" id="signPayBtn" class="success" disabled>Sign & Generate Proof</button>
+
+        <div id="signResult" class="result" style="display:none;"></div>
     </div>
 
     <div class="section">
         <div class="step-title">
-            <span class="step-number">2</span>
+            <span class="step-number">3</span>
             <h2>Submit X402 Proof</h2>
         </div>
-        <p>After completing the X402 payment, submit the proof to trigger Base chain transfer.</p>
+        <p>After signing the payment authorization, submit the proof to trigger Base chain transfer.</p>
 
         <label for="intentIdForProof">Intent ID:</label>
         <input type="text" id="intentIdForProof" placeholder="Enter intent UUID from Step 1">
@@ -380,7 +454,7 @@
 
     <div class="section">
         <div class="step-title">
-            <span class="step-number">3</span>
+            <span class="step-number">4</span>
             <h2>Check Payment Status</h2>
         </div>
         <p>Query the status of a payment intent. Use polling to monitor async processing.</p>
@@ -397,7 +471,7 @@
 
     <div class="section">
         <div class="step-title">
-            <span class="step-number">4</span>
+            <span class="step-number">5</span>
             <h2>Health Check</h2>
         </div>
         <p>Check if the API server is running and database is connected.</p>
@@ -551,13 +625,22 @@
                     document.getElementById('receiverWallet').textContent = data.merchant_recipient;
                     document.getElementById('paymentAmountDisplay').textContent = data.amount;
 
-                    // Update chain instructions
-                    const chainName = (data.payer_chain || payerChain).charAt(0).toUpperCase() + (data.payer_chain || payerChain).slice(1);
-                    document.getElementById('chainInstructions').textContent = chainName;
+                    // Show source recipient info for Solana/BSC
+                    const chain = data.payer_chain || payerChain;
+                    if (data.source_recipient && (chain === 'solana' || chain === 'bsc')) {
+                        document.getElementById('sourceRecipientInfo').style.display = 'block';
+                        document.getElementById('payerChainName').textContent = chain.charAt(0).toUpperCase() + chain.slice(1);
+                        document.getElementById('sourceRecipientWallet').textContent = data.source_recipient;
+                    } else {
+                        document.getElementById('sourceRecipientInfo').style.display = 'none';
+                    }
 
                     // Pre-fill other fields
                     document.getElementById('intentIdForProof').value = data.intent_id;
                     document.getElementById('intentId').value = data.intent_id;
+
+                    // Show wallet section for signing
+                    showWalletSection(data);
                 }
             } catch (err) {
                 showResult('createResult', 'Error: ' + err.message);
@@ -693,6 +776,462 @@
                 }
             }
         });
+
+        // ============================================
+        // WALLET INTEGRATION
+        // ============================================
+
+        // Current intent data (populated after createIntent)
+        let currentIntent = null;
+        let connectedWalletAddress = null;
+        let connectedWalletType = null; // 'metamask', 'glow', 'phantom'
+
+        // Chain configuration
+        const EVM_CHAINS = {
+            'base': {
+                chainId: '0x14a34',      // 84532 for Base Sepolia
+                chainIdDecimal: 84532,
+                chainName: 'Base Sepolia',
+                nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },
+                rpcUrls: ['https://sepolia.base.org'],
+                blockExplorerUrls: ['https://sepolia.basescan.org'],
+                usdcAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+                network: 'base-sepolia'
+            },
+            'bsc': {
+                chainId: '0x61',         // 97 for BSC Testnet
+                chainIdDecimal: 97,
+                chainName: 'BSC Testnet',
+                nativeCurrency: { name: 'BNB', symbol: 'BNB', decimals: 18 },
+                rpcUrls: ['https://data-seed-prebsc-1-s1.binance.org:8545'],
+                blockExplorerUrls: ['https://testnet.bscscan.com'],
+                usdcAddress: '0x64544969ed7EBf5f083679233325356EbE738930', // BUSD on BSC testnet
+                network: 'bsc-testnet'
+            }
+        };
+
+        const SOLANA_CONFIG = {
+            network: 'solana-devnet',
+            rpcUrl: 'https://api.devnet.solana.com',
+            usdcMint: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+            // SPL Token Program IDs
+            tokenProgramId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+            associatedTokenProgramId: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+        };
+
+        // Get the best available Solana wallet
+        function getSolanaWallet() {
+            // Prefer Glow
+            if (window.glow) {
+                return { wallet: window.glow, name: 'glow' };
+            }
+            // Fallback to Phantom
+            if (window.solana && window.solana.isPhantom) {
+                return { wallet: window.solana, name: 'phantom' };
+            }
+            return null;
+        }
+
+        // Check if EVM wallet (MetaMask) is available
+        function hasEvmWallet() {
+            return typeof window.ethereum !== 'undefined';
+        }
+
+        // Check if Solana wallet is available
+        function hasSolanaWallet() {
+            return getSolanaWallet() !== null;
+        }
+
+        // Connect wallet based on current chain
+        async function connectWallet() {
+            if (!currentIntent) {
+                alert('Please create a payment intent first');
+                return;
+            }
+
+            const chain = currentIntent.payer_chain;
+
+            try {
+                if (chain === 'solana') {
+                    await connectSolanaWallet();
+                } else {
+                    await connectEvmWallet(chain);
+                }
+            } catch (err) {
+                console.error('Wallet connection error:', err);
+                updateWalletStatus('error', null, err.message);
+                showResult('signResult', 'Error connecting wallet: ' + err.message);
+            }
+        }
+
+        // Connect to MetaMask for EVM chains
+        async function connectEvmWallet(chain) {
+            if (!window.ethereum) {
+                throw new Error('MetaMask not installed. Please install MetaMask to continue.');
+            }
+
+            const chainConfig = EVM_CHAINS[chain];
+            if (!chainConfig) {
+                throw new Error(`Unsupported chain: ${chain}`);
+            }
+
+            // Request account access
+            const accounts = await window.ethereum.request({
+                method: 'eth_requestAccounts'
+            });
+
+            if (!accounts || accounts.length === 0) {
+                throw new Error('No accounts found. Please unlock MetaMask.');
+            }
+
+            // Try to switch to the correct network
+            try {
+                await window.ethereum.request({
+                    method: 'wallet_switchEthereumChain',
+                    params: [{ chainId: chainConfig.chainId }]
+                });
+            } catch (switchError) {
+                // Chain not added, try to add it
+                if (switchError.code === 4902) {
+                    await window.ethereum.request({
+                        method: 'wallet_addEthereumChain',
+                        params: [{
+                            chainId: chainConfig.chainId,
+                            chainName: chainConfig.chainName,
+                            nativeCurrency: chainConfig.nativeCurrency,
+                            rpcUrls: chainConfig.rpcUrls,
+                            blockExplorerUrls: chainConfig.blockExplorerUrls
+                        }]
+                    });
+                } else {
+                    throw switchError;
+                }
+            }
+
+            connectedWalletAddress = accounts[0];
+            connectedWalletType = 'metamask';
+            updateWalletStatus('connected', accounts[0], chainConfig.chainName, 'metamask');
+            document.getElementById('signPayBtn').disabled = false;
+        }
+
+        // Connect to Solana wallet (Glow or Phantom)
+        async function connectSolanaWallet() {
+            const walletInfo = getSolanaWallet();
+            if (!walletInfo) {
+                throw new Error('No Solana wallet found. Please install Glow or Phantom.');
+            }
+
+            const resp = await walletInfo.wallet.connect();
+            connectedWalletAddress = resp.publicKey.toString();
+            connectedWalletType = walletInfo.name;
+            updateWalletStatus('connected', connectedWalletAddress, 'Solana Devnet', walletInfo.name);
+            document.getElementById('signPayBtn').disabled = false;
+        }
+
+        // Update wallet status UI
+        function updateWalletStatus(status, address, network, walletType) {
+            const statusDiv = document.getElementById('walletStatus');
+            const addressSpan = document.getElementById('connectedAddress');
+            const networkSpan = document.getElementById('connectedNetwork');
+            const walletTypeSpan = document.getElementById('walletType');
+
+            statusDiv.className = 'wallet-status ' + status;
+
+            if (status === 'connected') {
+                const shortAddress = address.substring(0, 6) + '...' + address.substring(address.length - 4);
+                addressSpan.innerHTML = shortAddress + ` <span class="wallet-badge ${walletType}">${walletType.toUpperCase()}</span>`;
+                networkSpan.textContent = network;
+                walletTypeSpan.textContent = walletType.charAt(0).toUpperCase() + walletType.slice(1);
+            } else if (status === 'error') {
+                addressSpan.textContent = 'Connection failed';
+                networkSpan.textContent = network || '-';
+                walletTypeSpan.textContent = '-';
+            } else {
+                addressSpan.textContent = 'Not connected';
+                networkSpan.textContent = '-';
+                walletTypeSpan.textContent = '-';
+            }
+        }
+
+        // Sign and generate X402 proof
+        async function signAndGenerateProof() {
+            if (!currentIntent || !connectedWalletAddress) {
+                alert('Please connect your wallet first');
+                return;
+            }
+
+            const chain = currentIntent.payer_chain;
+
+            try {
+                showResult('signResult', 'Signing payment authorization...');
+
+                let proof;
+                if (chain === 'solana') {
+                    proof = await signSolanaPayment();
+                } else {
+                    proof = await signEvmPayment(chain);
+                }
+
+                showResult('signResult', 'Proof generated successfully!\n\n' + proof);
+
+                // Auto-fill the proof in the submit section
+                document.getElementById('settleProof').value = proof;
+
+                // If auto-flow is enabled, auto-submit
+                if (autoFlowEnabled) {
+                    console.log('Auto-flow: Auto-submitting proof');
+                    setTimeout(() => submitProof(), 500);
+                }
+            } catch (err) {
+                console.error('Signing error:', err);
+                showResult('signResult', 'Error signing payment: ' + err.message);
+            }
+        }
+
+        // Sign EVM payment (EIP-712 TransferWithAuthorization)
+        async function signEvmPayment(chain) {
+            const chainConfig = EVM_CHAINS[chain];
+
+            // Determine the recipient address based on chain:
+            // - For Base: use merchant_recipient (direct transfer to user's Base wallet)
+            // - For BSC: use source_recipient (BSC receiver address, backend will forward to Base)
+            let recipientAddress;
+            if (chain === 'base') {
+                recipientAddress = currentIntent.merchant_recipient;
+            } else if (chain === 'bsc') {
+                recipientAddress = currentIntent.source_recipient;
+                if (!recipientAddress) {
+                    throw new Error('No source_recipient in intent. Backend may not support BSC payments.');
+                }
+            } else {
+                recipientAddress = currentIntent.merchant_recipient;
+            }
+
+            console.log(`EVM payment on ${chain} - recipient:`, recipientAddress);
+
+            // Convert amount to USDC atomic units (6 decimals)
+            const amountFloat = parseFloat(currentIntent.amount);
+            const amountAtomic = Math.floor(amountFloat * 1e6).toString();
+
+            // Generate random nonce (32 bytes)
+            const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
+            const nonce = '0x' + Array.from(nonceBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+            const now = Math.floor(Date.now() / 1000);
+
+            // EIP-712 Domain
+            const domain = {
+                name: 'USD Coin',
+                version: '2',
+                chainId: chainConfig.chainIdDecimal,
+                verifyingContract: chainConfig.usdcAddress
+            };
+
+            // EIP-712 Types
+            const types = {
+                TransferWithAuthorization: [
+                    { name: 'from', type: 'address' },
+                    { name: 'to', type: 'address' },
+                    { name: 'value', type: 'uint256' },
+                    { name: 'validAfter', type: 'uint256' },
+                    { name: 'validBefore', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' }
+                ]
+            };
+
+            // Message to sign
+            const message = {
+                from: connectedWalletAddress,
+                to: recipientAddress,
+                value: amountAtomic,
+                validAfter: (now - 600).toString(),   // 10 min ago
+                validBefore: (now + 600).toString(),  // 10 min future
+                nonce: nonce
+            };
+
+            // Sign with ethers.js
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+            const signature = await signer.signTypedData(domain, types, message);
+
+            // Build X402 payload
+            const payload = {
+                x402Version: 1,
+                scheme: 'exact',
+                network: chainConfig.network,
+                payload: {
+                    signature: signature,
+                    authorization: {
+                        from: connectedWalletAddress,
+                        to: recipientAddress,
+                        value: amountAtomic,
+                        validAfter: message.validAfter,
+                        validBefore: message.validBefore,
+                        nonce: nonce
+                    }
+                }
+            };
+
+            // Base64 encode
+            return btoa(JSON.stringify(payload));
+        }
+
+        // Derive Associated Token Account (ATA) address
+        // This is the standard derivation: [walletAddress, TOKEN_PROGRAM_ID, mintAddress] -> ASSOCIATED_TOKEN_PROGRAM_ID
+        function getAssociatedTokenAddress(walletAddress, mintAddress) {
+            const { PublicKey } = solanaWeb3;
+
+            const TOKEN_PROGRAM_ID = new PublicKey(SOLANA_CONFIG.tokenProgramId);
+            const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(SOLANA_CONFIG.associatedTokenProgramId);
+
+            const [ata] = PublicKey.findProgramAddressSync(
+                [
+                    walletAddress.toBuffer(),
+                    TOKEN_PROGRAM_ID.toBuffer(),
+                    mintAddress.toBuffer(),
+                ],
+                ASSOCIATED_TOKEN_PROGRAM_ID
+            );
+
+            return ata;
+        }
+
+        // Create SPL Token Transfer instruction
+        // Transfer instruction = instruction index 3 in the Token Program
+        // Data format: [3 (u8), amount (u64 little-endian)]
+        function createSplTransferInstruction(sourceAta, destinationAta, owner, amount) {
+            const { PublicKey, TransactionInstruction } = solanaWeb3;
+
+            const TOKEN_PROGRAM_ID = new PublicKey(SOLANA_CONFIG.tokenProgramId);
+
+            const keys = [
+                { pubkey: sourceAta, isSigner: false, isWritable: true },
+                { pubkey: destinationAta, isSigner: false, isWritable: true },
+                { pubkey: owner, isSigner: true, isWritable: false },
+            ];
+
+            // Create data buffer: instruction index (1 byte) + amount (8 bytes u64 little-endian)
+            const data = new Uint8Array(9);
+            data[0] = 3; // Transfer instruction index
+
+            // Write amount as u64 little-endian
+            const amountBigInt = BigInt(amount);
+            const amountBuffer = new ArrayBuffer(8);
+            const amountView = new DataView(amountBuffer);
+            amountView.setBigUint64(0, amountBigInt, true); // little-endian
+            data.set(new Uint8Array(amountBuffer), 1);
+
+            return new TransactionInstruction({
+                keys,
+                programId: TOKEN_PROGRAM_ID,
+                data: data,
+            });
+        }
+
+        // Sign Solana payment with SPL Token Transfer
+        async function signSolanaPayment() {
+            const walletInfo = getSolanaWallet();
+            if (!walletInfo) throw new Error('No Solana wallet available');
+
+            const { Connection, PublicKey, Transaction } = solanaWeb3;
+
+            // Get the source recipient (Solana address) from the intent
+            // For Solana, payments go to source_recipient, NOT merchant_recipient
+            const sourceRecipient = currentIntent.source_recipient;
+            if (!sourceRecipient) {
+                throw new Error('No source_recipient in intent. Backend may not support Solana payments.');
+            }
+
+            console.log('Solana payment - source_recipient:', sourceRecipient);
+
+            // Connect to devnet
+            const connection = new Connection(SOLANA_CONFIG.rpcUrl, 'confirmed');
+
+            // Setup public keys
+            const usdcMint = new PublicKey(SOLANA_CONFIG.usdcMint);
+            const payerPubkey = new PublicKey(connectedWalletAddress);
+            const recipientPubkey = new PublicKey(sourceRecipient);
+
+            // Derive Associated Token Accounts (ATAs)
+            const payerAta = getAssociatedTokenAddress(payerPubkey, usdcMint);
+            const recipientAta = getAssociatedTokenAddress(recipientPubkey, usdcMint);
+
+            console.log('Payer ATA:', payerAta.toString());
+            console.log('Recipient ATA:', recipientAta.toString());
+
+            // Convert amount to USDC atomic units (6 decimals)
+            const amountFloat = parseFloat(currentIntent.amount);
+            const amountAtomic = Math.floor(amountFloat * 1e6);
+
+            console.log('Amount (atomic):', amountAtomic);
+
+            // Create SPL Token Transfer instruction
+            const transferInstruction = createSplTransferInstruction(
+                payerAta,
+                recipientAta,
+                payerPubkey,
+                amountAtomic
+            );
+
+            // Build transaction
+            const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+
+            const tx = new Transaction();
+            tx.feePayer = payerPubkey;
+            tx.recentBlockhash = blockhash;
+            tx.lastValidBlockHeight = lastValidBlockHeight;
+            tx.add(transferInstruction);
+
+            // Sign with wallet
+            const signedTx = await walletInfo.wallet.signTransaction(tx);
+
+            // Serialize to base64
+            const serialized = signedTx.serialize().toString('base64');
+
+            // Build X402 payload for Solana
+            const payload = {
+                x402Version: 1,
+                scheme: 'exact',
+                network: SOLANA_CONFIG.network,
+                payload: {
+                    serializedTransaction: serialized
+                }
+            };
+
+            return btoa(JSON.stringify(payload));
+        }
+
+        // Show wallet section after intent is created
+        function showWalletSection(intentData) {
+            currentIntent = intentData;
+            document.getElementById('walletSection').style.display = 'block';
+
+            // Log source_recipient for debugging
+            console.log('Intent data:', intentData);
+            console.log('Source recipient:', intentData.source_recipient);
+
+            // Reset wallet state
+            connectedWalletAddress = null;
+            connectedWalletType = null;
+            updateWalletStatus('disconnected', null, null, null);
+            document.getElementById('signPayBtn').disabled = true;
+            document.getElementById('signResult').style.display = 'none';
+
+            // Update connect button text based on chain
+            const chain = intentData.payer_chain;
+            const connectBtn = document.getElementById('connectWalletBtn');
+
+            if (chain === 'solana') {
+                const walletInfo = getSolanaWallet();
+                if (walletInfo) {
+                    connectBtn.textContent = `Connect ${walletInfo.name === 'glow' ? 'Glow' : 'Phantom'}`;
+                } else {
+                    connectBtn.textContent = 'Install Glow/Phantom';
+                }
+            } else {
+                connectBtn.textContent = hasEvmWallet() ? 'Connect MetaMask' : 'Install MetaMask';
+            }
+        }
     </script>
 </body>
 </html>

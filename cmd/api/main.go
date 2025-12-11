@@ -74,6 +74,8 @@ func run() error {
 		privyService,
 		cfg.SolanaNetwork,
 		cfg.BaseNetwork,
+		cfg.SolanaReceiverAddress,
+		cfg.BSCReceiverAddress,
 	)
 
 	router := api.NewRouter(paymentSvc, cfg.CORSOrigins, cfg.APIPrefix)

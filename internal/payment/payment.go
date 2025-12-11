@@ -30,6 +30,7 @@ type Intent struct {
 	PayerChain        string
 	TargetChain       string
 	MerchantRecipient string
+	SourceRecipient   *string // Solana/BSC receiver address (nil for Base)
 	ReceiverEmail     *string
 	Amount            string
 	Status            string
