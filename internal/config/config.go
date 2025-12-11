@@ -48,6 +48,13 @@ type Config struct {
 	// Rate Limiting
 	RateLimitTTL int
 	RateLimitMax int
+
+	// reCAPTCHA
+	RecaptchaSecretKey    string
+	RecaptchaMinScore     float64
+	RecaptchaVerifyURL    string
+	RecaptchaEnabledPaths []string
+	RecaptchaSkipOnError  bool
 }
 
 // Load loads configuration from environment variables and .env file
@@ -74,6 +81,11 @@ func Load() (*Config, error) {
 		LogLevel:              getEnv("LOG_LEVEL", "debug"),
 		RateLimitTTL:          getEnvAsInt("RATE_LIMIT_TTL", 60),
 		RateLimitMax:          getEnvAsInt("RATE_LIMIT_MAX", 10),
+		RecaptchaSecretKey:    getEnv("RECAPTCHA_SECRET_KEY", ""),
+		RecaptchaMinScore:     getEnvAsFloat("RECAPTCHA_MIN_SCORE", 0.5),
+		RecaptchaVerifyURL:    getEnv("RECAPTCHA_VERIFY_URL", "https://www.google.com/recaptcha/api/siteverify"),
+		RecaptchaEnabledPaths: getEnvAsSlice("RECAPTCHA_ENABLED_PATHS", []string{}),
+		RecaptchaSkipOnError:  getEnvAsBool("RECAPTCHA_SKIP_ON_ERROR", true),
 	}
 
 	// Validate required fields
@@ -189,4 +201,26 @@ func getEnvAsSlice(key string, defaultValue []string) []string {
 		return defaultValue
 	}
 	return strings.Split(valueStr, ",")
+}
+
+func getEnvAsFloat(key string, defaultValue float64) float64 {
+	valueStr := os.Getenv(key)
+	if valueStr == "" {
+		return defaultValue
+	}
+	if value, err := strconv.ParseFloat(valueStr, 64); err == nil {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	valueStr := os.Getenv(key)
+	if valueStr == "" {
+		return defaultValue
+	}
+	if value, err := strconv.ParseBool(valueStr); err == nil {
+		return value
+	}
+	return defaultValue
 }
