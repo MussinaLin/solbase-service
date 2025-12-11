@@ -11,6 +11,7 @@ import (
 
 	"github.com/agent-tech/x402-api-backend/database"
 	"github.com/agent-tech/x402-api-backend/internal/api"
+	"github.com/agent-tech/x402-api-backend/internal/api/middleware"
 	"github.com/agent-tech/x402-api-backend/internal/config"
 	paymentrepo "github.com/agent-tech/x402-api-backend/internal/payment/repository/sqlc"
 	paymentsvc "github.com/agent-tech/x402-api-backend/internal/payment/service"
@@ -78,7 +79,25 @@ func run() error {
 		cfg.BSCReceiverAddress,
 	)
 
-	router := api.NewRouter(paymentSvc, cfg.CORSOrigins, cfg.APIPrefix)
+	// Setup reCAPTCHA configuration
+	var recaptchaConfig *middleware.RecaptchaConfig
+	if cfg.RecaptchaSecretKey != "" {
+		recaptchaConfig = &middleware.RecaptchaConfig{
+			SecretKey:    cfg.RecaptchaSecretKey,
+			MinScore:     cfg.RecaptchaMinScore,
+			VerifyURL:    cfg.RecaptchaVerifyURL,
+			EnabledPaths: cfg.RecaptchaEnabledPaths,
+			SkipOnError:  cfg.RecaptchaSkipOnError,
+		}
+		log.WithFields(log.Fields{
+			"enabled_paths": cfg.RecaptchaEnabledPaths,
+			"min_score":     cfg.RecaptchaMinScore,
+		}).Info("reCAPTCHA middleware enabled")
+	} else {
+		log.Info("reCAPTCHA middleware disabled (no secret key configured)")
+	}
+
+	router := api.NewRouter(paymentSvc, cfg.CORSOrigins, cfg.APIPrefix, recaptchaConfig)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),

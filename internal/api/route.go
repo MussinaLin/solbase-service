@@ -10,7 +10,7 @@ import (
 )
 
 // NewRouter creates and configures the chi router.
-func NewRouter(paymentSvc *service.Service, corsOrigins []string, apiPrefix string) chi.Router {
+func NewRouter(paymentSvc *service.Service, corsOrigins []string, apiPrefix string, recaptchaConfig *middleware.RecaptchaConfig) chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(chimiddleware.RequestID)
@@ -19,6 +19,11 @@ func NewRouter(paymentSvc *service.Service, corsOrigins []string, apiPrefix stri
 	r.Use(middleware.ErrorHandler())
 	r.Use(middleware.CORS(corsOrigins))
 	r.Use(chimiddleware.Recoverer)
+
+	// reCAPTCHA middleware (if enabled)
+	if recaptchaConfig != nil && recaptchaConfig.SecretKey != "" {
+		r.Use(middleware.Recaptcha(*recaptchaConfig))
+	}
 
 	healthapi.AddRoutes(r)
 
