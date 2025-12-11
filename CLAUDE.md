@@ -104,17 +104,18 @@ make install-tools            # Install air and golangci-lint
       ↓ (on failure → VERIFICATION_FAILED)
    SOURCE_SETTLED (proof verified + settled on source chain, txHash stored)
       ↓
-   [Step 3: Execute Base payment]
+   [Step 3: Execute Base payment - CHAIN DEPENDENT]
       ↓
-   BASE_SETTLING
-      ↓
-   BASE_SETTLED (success) / SOURCE_SETTLED (rollback on Base failure)
+   For Solana/BSC: BASE_SETTLING → proxy wallet transfers to merchant → BASE_SETTLED
+   For Base: Skip proxy transfer (already direct to merchant) → BASE_SETTLED
 
 5. AWAITING_PAYMENT/PENDING → EXPIRED (10 min timeout)
 ```
 
-**Important:** The client only signs an authorization - they do NOT execute the transaction.
-The settlement step (Step 2) actually executes the payment on the source chain via the X402 facilitator.
+**Important:**
+- The client only signs an authorization - they do NOT execute the transaction.
+- The settlement step (Step 2) actually executes the payment on the source chain via the X402 facilitator.
+- For Base chain payments, the settlement transfers directly to the merchant, so no proxy wallet transfer is needed.
 
 ### Project Structure
 
@@ -210,6 +211,13 @@ The `POST /intents` response includes `payment_requirements` following the X402 
   }
 }
 ```
+
+**`payTo` address varies by payer chain:**
+| Payer Chain | `payTo` Value | Format |
+|-------------|---------------|--------|
+| **Solana** | `SOLANA_RECEIVER_ADDRESS` | Base58 Solana address |
+| **BSC** | `BSC_RECEIVER_ADDRESS` | 0x Ethereum address |
+| **Base** | `merchant_recipient` (user's input) | 0x Ethereum address |
 
 **Client usage with X402 SDK:**
 ```typescript

@@ -35,6 +35,13 @@ UPDATE payment_intents
 SET status = $2, base_tx_hash = $3, base_settle_proof = $4, base_settled_at = $5, completed_at = $6
 WHERE intent_id = $1;
 
+-- name: UpdatePaymentIntentBaseSettledDirect :exec
+-- For Base chain payments: X402 settlement already transferred funds directly to merchant.
+-- No proxy wallet transfer needed, just mark as complete.
+UPDATE payment_intents
+SET status = 'BASE_SETTLED', base_settled_at = $2, completed_at = $2
+WHERE intent_id = $1;
+
 -- name: UpdatePaymentIntentExpired :exec
 UPDATE payment_intents
 SET status = 'EXPIRED'

@@ -219,32 +219,37 @@ func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntent
 }
 
 // buildPaymentRequirements constructs X402 PaymentRequirements for an intent.
+// Note: The intent.MerchantRecipient (Base wallet address) is stored separately
+// and will be used later when executing the Base chain transfer via BASE_PROXY_PRIVATE_KEY.
 func (s *Service) buildPaymentRequirements(intent *payment.Intent) *payment.PaymentRequirements {
-	// Determine network based on payer chain
+	// Determine network and payTo address based on payer chain
+	// IMPORTANT: payTo must be in the correct format for the payer chain:
+	// - Solana: base58 Solana address (SOLANA_RECEIVER_ADDRESS)
+	// - BSC: 0x Ethereum address (BSC_RECEIVER_ADDRESS)
+	// - Base: 0x Ethereum address (merchant_recipient - user's input wallet)
+	//
+	// The merchant_recipient (final receiver on Base) is stored in the intent
+	// and will be used when executing the Base chain payment after settlement.
 	var network string
+	var payTo string
+
 	switch intent.PayerChain {
 	case "solana":
 		network = s.solanaNetwork
-	case "base":
-		network = s.baseSourceNetwork
+		payTo = s.solanaReceiverAddress // Solana address (base58)
 	case "bsc":
 		network = s.bscNetwork
+		payTo = s.bscReceiverAddress // BSC address (0x...)
+	case "base":
+		network = s.baseSourceNetwork
+		payTo = intent.MerchantRecipient // User's Base wallet (0x...)
 	default:
 		network = s.solanaNetwork
+		payTo = s.solanaReceiverAddress
 	}
 
 	// Get USDC asset address for the network
 	asset := usdcAssets[network]
-
-	// Determine payTo address
-	// For Solana/BSC: use source recipient (chain-specific receiver)
-	// For Base: use merchant recipient directly
-	var payTo string
-	if intent.SourceRecipient != nil {
-		payTo = *intent.SourceRecipient
-	} else {
-		payTo = intent.MerchantRecipient
-	}
 
 	// Convert amount to microdollars (USDC has 6 decimals)
 	amountMicros, _ := amountToMicrodollars(intent.Amount)
@@ -423,6 +428,25 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 		return
 	}
 
+	// Step 4: Handle Base payment based on payer chain
+	// For Base chain payments: X402 settlement already transferred funds directly to merchant
+	// For Solana/BSC payments: Need to transfer from proxy wallet to merchant on Base
+	if payerChain == "base" {
+		// Base chain: Settlement already sent funds to merchant, just mark as complete
+		logger.Info("Base chain payment: Settlement complete, marking as BASE_SETTLED")
+
+		if err := s.repo.UpdateBaseSettledDirect(ctx, intentID); err != nil {
+			logger.WithError(err).Error("Failed to update intent to BASE_SETTLED")
+			errMsg := fmt.Sprintf("Failed to finalize: %s", err.Error())
+			if updateErr := s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, &errMsg); updateErr != nil {
+				logger.WithError(updateErr).Error("Failed to update intent with error")
+			}
+		}
+
+		return
+	}
+
+	// Solana/BSC chain: Need to trigger Base payment from proxy wallet
 	select {
 	case <-ctx.Done():
 		logger.Error("Context cancelled before Base payment")
@@ -432,8 +456,7 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 	default:
 	}
 
-	// Step 4: Trigger Base payment
-	logger.Info("Triggering Base payment")
+	logger.Info("Triggering Base payment from proxy wallet")
 
 	if err := s.triggerBasePayment(ctx, intentID); err != nil {
 		logger.WithError(err).Error("Base payment failed")

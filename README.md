@@ -244,17 +244,17 @@ Poll this endpoint to track payment progress.
    │
    └──> SOURCE_SETTLED (proof verified + settled on source chain, txHash stored)
             │
-            │ (goroutine: execute Base payment)
+            │ (Step 3: Base payment - CHAIN DEPENDENT)
             │
-            └──> BASE_SETTLING
-                      │
-                      ├──> BASE_SETTLED (success)
-                      │
-                      └──> SOURCE_SETTLED (rollback on failure)
+            ├──> [Solana/BSC] BASE_SETTLING → proxy wallet → merchant → BASE_SETTLED
+            │
+            └──> [Base] Skip proxy (already direct to merchant) → BASE_SETTLED
 ```
 
-**Important:** The client only SIGNS an authorization - they do NOT execute any on-chain transaction.
-The settlement step (via X402 facilitator) actually executes the payment on the source chain.
+**Important:**
+- The client only SIGNS an authorization - they do NOT execute any on-chain transaction.
+- The settlement step (via X402 facilitator) actually executes the payment on the source chain.
+- For Base chain payments, settlement transfers directly to merchant, so no proxy wallet transfer is needed.
 
 ## Project Structure
 
@@ -491,6 +491,13 @@ curl http://localhost:3001/health
 ### PaymentRequirements
 
 The `POST /intents` response includes `payment_requirements` following the X402 protocol standard. Use this with the X402 SDK to create signed payment authorizations:
+
+**`payTo` address varies by payer chain:**
+| Payer Chain | `payTo` Value | Format |
+|-------------|---------------|--------|
+| **Solana** | `SOLANA_RECEIVER_ADDRESS` | Base58 Solana address |
+| **BSC** | `BSC_RECEIVER_ADDRESS` | 0x Ethereum address |
+| **Base** | `merchant_recipient` (user's input) | 0x Ethereum address |
 
 ```typescript
 // 1. Create intent and get payment_requirements

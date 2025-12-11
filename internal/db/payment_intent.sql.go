@@ -136,6 +136,24 @@ func (q *Queries) UpdatePaymentIntentBaseSettled(ctx context.Context, arg Update
 	return err
 }
 
+const updatePaymentIntentBaseSettledDirect = `-- name: UpdatePaymentIntentBaseSettledDirect :exec
+UPDATE payment_intents
+SET status = 'BASE_SETTLED', base_settled_at = $2, completed_at = $2
+WHERE intent_id = $1
+`
+
+type UpdatePaymentIntentBaseSettledDirectParams struct {
+	IntentID      string           `json:"intent_id"`
+	BaseSettledAt pgtype.Timestamp `json:"base_settled_at"`
+}
+
+// For Base chain payments: X402 settlement already transferred funds directly to merchant.
+// No proxy wallet transfer needed, just mark as complete.
+func (q *Queries) UpdatePaymentIntentBaseSettledDirect(ctx context.Context, arg UpdatePaymentIntentBaseSettledDirectParams) error {
+	_, err := q.db.Exec(ctx, updatePaymentIntentBaseSettledDirect, arg.IntentID, arg.BaseSettledAt)
+	return err
+}
+
 const updatePaymentIntentExpired = `-- name: UpdatePaymentIntentExpired :exec
 UPDATE payment_intents
 SET status = 'EXPIRED'

@@ -162,6 +162,22 @@ func (r *Repository) UpdateBaseSettled(ctx context.Context, intentID, txHash, pr
 	return nil
 }
 
+// UpdateBaseSettledDirect marks as BASE_SETTLED without proxy transfer.
+// Used for Base chain payments where X402 settlement already transferred funds directly to merchant.
+func (r *Repository) UpdateBaseSettledDirect(ctx context.Context, intentID string) error {
+	now := time.Now()
+
+	err := r.queries.UpdatePaymentIntentBaseSettledDirect(ctx, db.UpdatePaymentIntentBaseSettledDirectParams{
+		IntentID:      intentID,
+		BaseSettledAt: pgtype.Timestamp{Time: now, Valid: true},
+	})
+	if err != nil {
+		return fmt.Errorf("update payment intent base settled direct: %w", err)
+	}
+
+	return nil
+}
+
 // UpdateExpired marks the intent as expired.
 func (r *Repository) UpdateExpired(ctx context.Context, intentID string) error {
 	err := r.queries.UpdatePaymentIntentExpired(ctx, intentID)

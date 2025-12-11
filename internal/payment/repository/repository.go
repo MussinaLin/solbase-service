@@ -19,6 +19,9 @@ type Repository interface {
 	UpdateWithProofIfStatus(ctx context.Context, intentID, proof, newStatus, expectedStatus string) (int64, error)
 	UpdateSourceSettled(ctx context.Context, intentID string, details *payment.ProofDetails) error
 	UpdateBaseSettled(ctx context.Context, intentID, txHash, proof string) error
+	// UpdateBaseSettledDirect marks as BASE_SETTLED without proxy transfer (for Base chain payments).
+	// Used when X402 settlement already transferred funds directly to merchant.
+	UpdateBaseSettledDirect(ctx context.Context, intentID string) error
 	UpdateExpired(ctx context.Context, intentID string) error
 }
 
