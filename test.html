@@ -7,6 +7,8 @@
     <!-- Web3 Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/ethers@6.9.0/dist/ethers.umd.min.js"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+    <!-- reCAPTCHA v3 -->
+    <script src="https://www.google.com/recaptcha/api.js?render=6LfogigsAAAAAJ-uxXLTEtTWxcwXv9z8THaNJZzF"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -755,9 +757,18 @@
 
         async function healthCheck() {
             try {
-                const res = await fetch(`${API_BASE}/health`);
+                // Get reCAPTCHA token
+                showResult('healthResult', 'Getting reCAPTCHA token...');
+                const token = await grecaptcha.execute('6LfogigsAAAAAJ-uxXLTEtTWxcwXv9z8THaNJZzF', { action: 'health_check' });
+
+                // Make request with token in header
+                const res = await fetch(`${API_BASE}/health`, {
+                    headers: {
+                        'X-Recaptcha-Token': token
+                    }
+                });
                 const data = await res.json();
-                showResult('healthResult', JSON.stringify(data, null, 2));
+                showResult('healthResult', `reCAPTCHA token: ${token.substring(0, 50)}...\n\n` + JSON.stringify(data, null, 2));
             } catch (err) {
                 showResult('healthResult', 'Error: ' + err.message + '\n\nMake sure the server is running on ' + API_BASE);
             }
