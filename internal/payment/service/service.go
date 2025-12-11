@@ -64,7 +64,7 @@ func validateEmail(email string) bool {
 	return err == nil
 }
 
-// validateAmount checks if amount is a valid positive number with up to 2 decimal places.
+// validateAmount checks if amount is a valid positive number with up to 6 decimal places.
 func validateAmount(amount string) error {
 	if !amountRegex.MatchString(amount) {
 		return payment.ErrInvalidAmount

@@ -43,7 +43,7 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 
 ### Prerequisites
 
-- Go >= 1.23
+- Go >= 1.24
 - Docker & Docker Compose (for PostgreSQL)
 - sqlc (`brew install sqlc`)
 - goose (`go install github.com/pressly/goose/v3/cmd/goose@latest`)
@@ -131,6 +131,7 @@ Create a payment intent with receiver's email address OR wallet address. Returns
   "intent_id": "550e8400-e29b-41d4-a716-446655440000",
   "email": "receiver@example.com",
   "merchant_recipient": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb1",
+  "source_recipient": "Your_Solana_Address",
   "amount": "10.00",
   "payer_chain": "solana",
   "status": "AWAITING_PAYMENT",
@@ -139,7 +140,7 @@ Create a payment intent with receiver's email address OR wallet address. Returns
 }
 ```
 
-Note: `email` field is only included in response when email was provided in request.
+Note: `email` field is only included when email was provided in request. `source_recipient` is the payment receiver address on the payer chain (Solana/BSC) - only included for non-Base payer chains.
 
 ### POST /intents/{intent_id} - Submit Proof
 
@@ -456,10 +457,11 @@ curl http://localhost:3001/health
 
 ```json
 {
-  "status": "ok",
+  "status": "healthy",
   "info": {
-    "database": { "status": "up" },
-    "memory": { "status": "up", "alloc_mb": 12, "sys_mb": 24 }
+    "database": { "status": "healthy" },
+    "memory": { "alloc_mb": 12, "total_alloc_mb": 24, "sys_mb": 36, "num_gc": 5 },
+    "goroutines": 10
   }
 }
 ```
