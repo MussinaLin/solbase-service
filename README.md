@@ -21,6 +21,15 @@ Clean, production-ready Go backend that provides REST API endpoints for the X402
 - **sqlc + PostgreSQL** - Type-safe SQL queries with goose migrations
 - **Testing Website** - Built-in HTML tester with auto-flow for API endpoints
 
+### Security & Reliability
+
+- **Input Validation (Poka-Yoke)** - Email, wallet address, and amount validation
+- **Race Condition Prevention** - Optimistic locking prevents double-spend attacks
+- **Error Sanitization** - Generic error messages to clients, detailed logs server-side
+- **Graceful Shutdown** - Goroutine lifecycle management with WaitGroup
+- **Idempotent Resource Cleanup** - Safe concurrent and repeated close operations
+- **Request Body Limits** - 1MB limit prevents memory exhaustion attacks
+
 ## Architecture
 
 **Layer Architecture: API → Service → Repository → Domain**
@@ -246,7 +255,7 @@ Without settlement, the proof is only verified but funds are not transferred.
 │   ├── storage/                        # Database connections
 │   ├── payment/                        # Payment domain
 │   │   ├── payment.go                  # Domain models, interfaces
-│   │   ├── errors.go                   # Domain-specific errors
+│   │   ├── errors.go                   # Domain errors (validation, concurrency, etc.)
 │   │   ├── service/                    # Business logic layer
 │   │   │   ├── service.go              # PaymentIntentService
 │   │   │   ├── base_payment.go         # Base USDC transfers
@@ -408,6 +417,35 @@ docker build -t x402-api-backend .
 docker run -p 3001:3001 --env-file .env x402-api-backend
 ```
 
+## Security
+
+### Input Validation
+
+All inputs are validated at the service layer before processing:
+
+| Field | Validation | Error |
+|-------|------------|-------|
+| Email | RFC 5322 compliant (`net/mail.ParseAddress`) | `invalid email format` |
+| Recipient | Ethereum address format (`^0x[a-fA-F0-9]{40}$`) | `invalid recipient address format` |
+| Amount | Positive, max 6 decimals, range 0.01-1,000,000 | `invalid amount` |
+
+### Concurrency Safety
+
+- **Optimistic Locking**: Proof submission uses `UPDATE ... WHERE status = expected_status` to prevent double-spend attacks
+- **Goroutine Lifecycle**: Async operations tracked with `sync.WaitGroup` for graceful shutdown
+- **Idempotent Close**: Resource cleanup methods use `sync.Once` to prevent double-close panics
+
+### Error Handling
+
+- **Sanitized Responses**: Internal errors return generic messages to clients (e.g., "internal server error")
+- **Detailed Logging**: Full error details logged server-side with `logrus`
+- **Domain Errors**: Typed errors in `internal/payment/errors.go` for consistent handling
+
+### Request Limits
+
+- **Body Size**: 1MB maximum request body size (prevents memory exhaustion)
+- **Timeout**: HTTP client timeout of 30 seconds for external API calls
+
 ## Monitoring
 
 ### Health Check
@@ -473,6 +511,15 @@ Error: migration failed
 - Ensure `FACILITATOR_URL` is accessible (default: https://x402.org/facilitator)
 - Verify payment was made to the correct address on the correct network
 - Check that the proof matches the intent amount
+
+**Validation errors**
+- `invalid email format` - Email must be RFC 5322 compliant (e.g., `user@example.com`)
+- `invalid recipient address format` - Must be valid Ethereum address (`0x` + 40 hex chars)
+- `invalid amount` - Must be positive, max 6 decimal places, range 0.01-1,000,000
+
+**Concurrent proof submission error**
+- `concurrent update detected` - Another request already submitted proof for this intent
+- This is expected behavior when multiple clients submit proofs simultaneously
 
 **CORS errors in browser**
 - Add your frontend URL to `CORS_ORIGINS` in `.env`

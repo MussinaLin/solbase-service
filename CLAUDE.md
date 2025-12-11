@@ -199,18 +199,26 @@ Hardcoded in `internal/payment/service/base_payment.go`:
 
 The `PrivyService` (`internal/payment/service/privy.go`) handles email-to-wallet resolution:
 1. Check local database cache for existing mapping
-2. If not found, query Privy API for user by email
+2. If not found, query Privy API for user by email (with context propagation)
 3. If user doesn't exist, create user with email via Privy import API
 4. Create ethereum wallet for user if needed
 5. Cache mapping in local database
+
+### Input Validation (Poka-Yoke)
+
+The service layer validates all inputs before processing:
+- **Email validation**: RFC 5322 compliant via `net/mail.ParseAddress()`
+- **Wallet address validation**: Uses `utils.IsValidEthAddress()` (regex: `^0x[a-fA-F0-9]{40}$`)
+- **Amount validation**: Positive number, max 6 decimal places, range 0.01 - 1,000,000 USDC
 
 ### Proof Validation
 
 `SubmitProof` validates the X402 proof before storing:
 1. Decode proof using `types.DecodePaymentPayloadFromBase64(proof)`
 2. Extract amount from `payload.Payload.Authorization.Value`
-3. Compare with intent amount (must match)
-4. On-chain verification is done asynchronously via X402 facilitator
+3. Compare with intent amount using **integer arithmetic** (avoids float precision issues)
+4. Uses **optimistic locking** to prevent double-spend (concurrent proof submissions)
+5. On-chain verification is done asynchronously via X402 facilitator
 
 ### X402 Proof Verification & Settlement
 
@@ -228,9 +236,23 @@ settleResp, _ := client.Settle(payload, requirements)
 Amount is extracted from `payload.Payload.Authorization.Value` (string, USDC microdollars with 6 decimals).
 
 **Key Methods:**
-- `ValidateProofAmount()` - Validates proof amount matches intent (called synchronously in SubmitProof)
+- `ValidateProofAmount()` - Validates proof amount matches intent using integer arithmetic (called synchronously in SubmitProof)
 - `VerifyAndExtractDetails()` - Full verification with facilitator (async)
 - `SettlePaymentForChain()` - Settles payment on source chain via facilitator (async)
+
+### Concurrency Safety
+
+- **Optimistic locking**: `UpdateWithProofIfStatus` query prevents race conditions in proof submission
+- **Goroutine lifecycle**: Service tracks async operations with `sync.WaitGroup` for graceful shutdown
+- **Idempotent close**: Both `storage.Close()` and `BasePaymentService.Close()` use `sync.Once`
+
+### Error Handling
+
+- **Error sanitization**: API handlers return generic messages for internal errors, log details server-side
+- **Domain errors** (in `internal/payment/errors.go`):
+  - `ErrNotFound`, `ErrInvalidInput`, `ErrExpired`, `ErrInvalidStatus`
+  - `ErrProofValidation`, `ErrInsufficientFunds`, `ErrConcurrentUpdate`
+  - `ErrInvalidEmail`, `ErrInvalidRecipient`, `ErrInvalidAmount`
 
 ## Environment Variables
 

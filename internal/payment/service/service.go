@@ -16,8 +16,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// amountRegex validates amount format: positive number with up to 2 decimal places
-var amountRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
+// amountRegex validates amount format: positive number with up to 6 decimal places
+var amountRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,6})?$`)
 
 // Service implements the payment.Service interface.
 type Service struct {

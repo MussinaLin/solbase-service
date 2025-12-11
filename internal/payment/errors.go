@@ -40,5 +40,5 @@ var (
 	ErrInvalidRecipient = errors.New("invalid recipient address format")
 
 	// ErrInvalidAmount is returned when amount is invalid (negative, zero, or malformed).
-	ErrInvalidAmount = errors.New("invalid amount: must be a positive number with up to 2 decimal places")
+	ErrInvalidAmount = errors.New("invalid amount: must be a positive number with up to 6 decimal places")
 )
