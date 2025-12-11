@@ -25,6 +25,11 @@ UPDATE payment_intents
 SET sol_settle_proof = $2, status = $3
 WHERE intent_id = $1;
 
+-- name: UpdatePaymentIntentWithProofIfStatus :execrows
+UPDATE payment_intents
+SET sol_settle_proof = $2, status = $3
+WHERE intent_id = $1 AND status = 'AWAITING_PAYMENT';
+
 -- name: UpdatePaymentIntentBaseSettled :exec
 UPDATE payment_intents
 SET status = $2, base_tx_hash = $3, base_settle_proof = $4, base_settled_at = $5, completed_at = $6

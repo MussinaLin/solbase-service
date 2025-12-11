@@ -207,3 +207,23 @@ func (q *Queries) UpdatePaymentIntentWithProof(ctx context.Context, arg UpdatePa
 	_, err := q.db.Exec(ctx, updatePaymentIntentWithProof, arg.IntentID, arg.SolSettleProof, arg.Status)
 	return err
 }
+
+const updatePaymentIntentWithProofIfStatus = `-- name: UpdatePaymentIntentWithProofIfStatus :execrows
+UPDATE payment_intents
+SET sol_settle_proof = $2, status = $3
+WHERE intent_id = $1 AND status = 'AWAITING_PAYMENT'
+`
+
+type UpdatePaymentIntentWithProofIfStatusParams struct {
+	IntentID       string      `json:"intent_id"`
+	SolSettleProof pgtype.Text `json:"sol_settle_proof"`
+	Status         string      `json:"status"`
+}
+
+func (q *Queries) UpdatePaymentIntentWithProofIfStatus(ctx context.Context, arg UpdatePaymentIntentWithProofIfStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePaymentIntentWithProofIfStatus, arg.IntentID, arg.SolSettleProof, arg.Status)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}

@@ -101,6 +101,21 @@ func (r *Repository) UpdateWithProof(ctx context.Context, intentID, proof, statu
 	return nil
 }
 
+// UpdateWithProofIfStatus atomically updates proof and status only if current status is AWAITING_PAYMENT.
+// Returns number of affected rows (0 if status didn't match, 1 if successful).
+func (r *Repository) UpdateWithProofIfStatus(ctx context.Context, intentID, proof, newStatus, expectedStatus string) (int64, error) {
+	rowsAffected, err := r.queries.UpdatePaymentIntentWithProofIfStatus(ctx, db.UpdatePaymentIntentWithProofIfStatusParams{
+		IntentID:       intentID,
+		SolSettleProof: pgtype.Text{String: proof, Valid: true},
+		Status:         newStatus,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("update payment intent with proof if status: %w", err)
+	}
+
+	return rowsAffected, nil
+}
+
 // UpdateSourceSettled updates the intent with source chain settlement data.
 func (r *Repository) UpdateSourceSettled(ctx context.Context, intentID string, details *payment.ProofDetails) error {
 	now := time.Now()

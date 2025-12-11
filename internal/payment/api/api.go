@@ -10,7 +10,15 @@ import (
 	"github.com/agent-tech/x402-api-backend/internal/payment"
 	"github.com/agent-tech/x402-api-backend/internal/payment/service"
 	"github.com/go-chi/chi/v5"
+	log "github.com/sirupsen/logrus"
 )
+
+// sanitizeInternalError returns a generic error message while logging the detailed error.
+func sanitizeInternalError(err error, context string) string {
+	log.WithError(err).WithField("context", context).Error("Internal error")
+
+	return "an internal error occurred, please try again later"
+}
 
 // AddRoutes registers payment routes.
 func AddRoutes(r chi.Router, svc *service.Service) {
@@ -111,7 +119,12 @@ func createIntent(svc *service.Service) httpwrap.HandlerFunc {
 			PayerChain: req.PayerChain,
 		})
 		if err != nil {
-			if errors.Is(err, payment.ErrInvalidInput) || errors.Is(err, payment.ErrInvalidPayerChain) {
+			// User-facing validation errors - safe to expose
+			if errors.Is(err, payment.ErrInvalidInput) ||
+				errors.Is(err, payment.ErrInvalidPayerChain) ||
+				errors.Is(err, payment.ErrInvalidEmail) ||
+				errors.Is(err, payment.ErrInvalidRecipient) ||
+				errors.Is(err, payment.ErrInvalidAmount) {
 				return nil, &httpwrap.ErrorResponse{
 					StatusCode: http.StatusBadRequest,
 					ErrorMsg:   err.Error(),
@@ -119,9 +132,10 @@ func createIntent(svc *service.Service) httpwrap.HandlerFunc {
 				}
 			}
 
+			// Internal errors - sanitize to avoid leaking implementation details
 			return nil, &httpwrap.ErrorResponse{
 				StatusCode: http.StatusInternalServerError,
-				ErrorMsg:   err.Error(),
+				ErrorMsg:   sanitizeInternalError(err, "create_intent"),
 				Err:        err,
 			}
 		}
@@ -171,7 +185,11 @@ func submitProof(svc *service.Service) httpwrap.HandlerFunc {
 				return nil, httpwrap.NewNotFoundErrorResponse("payment intent not found")
 			}
 
-			if errors.Is(err, payment.ErrInvalidStatus) || errors.Is(err, payment.ErrProofValidation) || errors.Is(err, payment.ErrExpired) {
+			// User-facing errors - safe to expose
+			if errors.Is(err, payment.ErrInvalidStatus) ||
+				errors.Is(err, payment.ErrProofValidation) ||
+				errors.Is(err, payment.ErrExpired) ||
+				errors.Is(err, payment.ErrConcurrentUpdate) {
 				return nil, &httpwrap.ErrorResponse{
 					StatusCode: http.StatusBadRequest,
 					ErrorMsg:   err.Error(),
@@ -179,9 +197,10 @@ func submitProof(svc *service.Service) httpwrap.HandlerFunc {
 				}
 			}
 
+			// Internal errors - sanitize to avoid leaking implementation details
 			return nil, &httpwrap.ErrorResponse{
 				StatusCode: http.StatusInternalServerError,
-				ErrorMsg:   err.Error(),
+				ErrorMsg:   sanitizeInternalError(err, "submit_proof"),
 				Err:        err,
 			}
 		}
@@ -214,9 +233,10 @@ func getIntent(svc *service.Service) httpwrap.HandlerFunc {
 				return nil, httpwrap.NewNotFoundErrorResponse("payment intent not found")
 			}
 
+			// Internal errors - sanitize to avoid leaking implementation details
 			return nil, &httpwrap.ErrorResponse{
 				StatusCode: http.StatusInternalServerError,
-				ErrorMsg:   err.Error(),
+				ErrorMsg:   sanitizeInternalError(err, "get_intent"),
 				Err:        err,
 			}
 		}

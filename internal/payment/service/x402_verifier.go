@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agent-tech/x402-api-backend/internal/payment"
@@ -60,98 +61,6 @@ func (v *X402Verifier) networkForChain(payerChain string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported payer chain: %s", payerChain)
 	}
-}
-
-// VerifyProof verifies an X402 settlement proof.
-func (v *X402Verifier) VerifyProof(settleProof string, amount string, merchantRecipient string) error {
-	log.WithFields(log.Fields{
-		"amount":    amount,
-		"recipient": merchantRecipient,
-	}).Info("Verifying X402 settlement proof")
-
-	payload, err := types.DecodePaymentPayloadFromBase64(settleProof)
-	if err != nil {
-		log.WithError(err).Error("Failed to decode payment payload")
-
-		return fmt.Errorf("invalid proof encoding: %w", err)
-	}
-
-	requirements := &types.PaymentRequirements{
-		Scheme:  "exact-evm",
-		Network: v.solanaNetwork,
-		PayTo:   merchantRecipient,
-	}
-
-	verifyResp, err := v.client.Verify(payload, requirements)
-	if err != nil {
-		log.WithError(err).Error("X402 proof verification failed")
-
-		return fmt.Errorf("verification failed: %w", err)
-	}
-
-	if !verifyResp.IsValid {
-		reason := "unknown"
-		if verifyResp.InvalidReason != nil {
-			reason = *verifyResp.InvalidReason
-		}
-
-		log.WithField("reason", reason).Error("X402 proof is invalid")
-
-		return fmt.Errorf("proof verification failed: %s", reason)
-	}
-
-	log.WithFields(log.Fields{
-		"payer": verifyResp.Payer,
-	}).Info("X402 proof verified successfully")
-
-	return nil
-}
-
-// SettlePayment settles a payment with the X402 facilitator.
-func (v *X402Verifier) SettlePayment(settleProof string, amount string, merchantRecipient string) (*types.SettleResponse, error) {
-	log.WithFields(log.Fields{
-		"amount":    amount,
-		"recipient": merchantRecipient,
-	}).Info("Settling payment with X402 facilitator")
-
-	payload, err := types.DecodePaymentPayloadFromBase64(settleProof)
-	if err != nil {
-		log.WithError(err).Error("Failed to decode payment payload")
-
-		return nil, fmt.Errorf("invalid proof encoding: %w", err)
-	}
-
-	requirements := &types.PaymentRequirements{
-		Scheme:  "exact-evm",
-		Network: v.solanaNetwork,
-		PayTo:   merchantRecipient,
-	}
-
-	settleResp, err := v.client.Settle(payload, requirements)
-	if err != nil {
-		log.WithError(err).Error("X402 settlement failed")
-
-		return nil, fmt.Errorf("settlement failed: %w", err)
-	}
-
-	if !settleResp.Success {
-		reason := "unknown"
-		if settleResp.ErrorReason != nil {
-			reason = *settleResp.ErrorReason
-		}
-
-		log.WithField("reason", reason).Error("X402 settlement unsuccessful")
-
-		return nil, fmt.Errorf("settlement failed: %s", reason)
-	}
-
-	log.WithFields(log.Fields{
-		"transaction": settleResp.Transaction,
-		"network":     settleResp.Network,
-		"payer":       settleResp.Payer,
-	}).Info("Payment settled successfully with X402 facilitator")
-
-	return settleResp, nil
 }
 
 // SettlePaymentForChain settles a payment with the X402 facilitator for the specified chain.
@@ -281,6 +190,7 @@ func (v *X402Verifier) VerifyAndExtractDetails(settleProof string, merchantRecip
 }
 
 // ValidateProofAmount validates that the proof matches the intent's amount.
+// Uses integer arithmetic to avoid floating-point precision issues.
 func (v *X402Verifier) ValidateProofAmount(settleProof string, intentAmount string) error {
 	payload, err := types.DecodePaymentPayloadFromBase64(settleProof)
 	if err != nil {
@@ -293,23 +203,67 @@ func (v *X402Verifier) ValidateProofAmount(settleProof string, intentAmount stri
 
 	valueStr := payload.Payload.Authorization.Value
 
-	proofAmount, err := strconv.ParseUint(valueStr, 10, 64)
+	// Proof amount is in microdollars (6 decimal places)
+	proofMicrodollars, err := strconv.ParseUint(valueStr, 10, 64)
 	if err != nil {
 		return fmt.Errorf("invalid proof amount format: %w", err)
 	}
 
-	proofAmountDollars := fmt.Sprintf("%.2f", float64(proofAmount)/1e6)
-
-	amount, err := strconv.ParseFloat(intentAmount, 64)
+	// Convert intent amount (string like "10.00" or "10.5") to microdollars
+	// Using integer arithmetic to avoid floating-point precision issues
+	intentMicrodollars, err := amountToMicrodollars(intentAmount)
 	if err != nil {
 		return fmt.Errorf("invalid intent amount format: %w", err)
 	}
 
-	intentAmountStr := fmt.Sprintf("%.2f", amount)
+	if proofMicrodollars != intentMicrodollars {
+		proofDollars := float64(proofMicrodollars) / 1e6
+		intentDollars := float64(intentMicrodollars) / 1e6
 
-	if proofAmountDollars != intentAmountStr {
-		return fmt.Errorf("amount mismatch: proof has %s, intent requires %s", proofAmountDollars, intentAmountStr)
+		return fmt.Errorf("amount mismatch: proof has %.6f, intent requires %.6f", proofDollars, intentDollars)
 	}
 
 	return nil
+}
+
+// amountToMicrodollars converts a dollar amount string (e.g., "10.50") to microdollars (uint64).
+// Uses string parsing to avoid floating-point precision issues.
+func amountToMicrodollars(amount string) (uint64, error) {
+	// Split on decimal point
+	parts := strings.Split(amount, ".")
+
+	var dollars uint64
+	var cents uint64
+
+	// Parse whole dollars
+	if parts[0] != "" {
+		d, err := strconv.ParseUint(parts[0], 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid dollars: %w", err)
+		}
+
+		dollars = d
+	}
+
+	// Parse fractional part if present
+	if len(parts) == 2 && parts[1] != "" {
+		// Pad or truncate to 6 decimal places (microdollars)
+		fractional := parts[1]
+		if len(fractional) > 6 {
+			fractional = fractional[:6]
+		}
+
+		for len(fractional) < 6 {
+			fractional += "0"
+		}
+
+		c, err := strconv.ParseUint(fractional, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid fractional: %w", err)
+		}
+
+		cents = c
+	}
+
+	return dollars*1e6 + cents, nil
 }

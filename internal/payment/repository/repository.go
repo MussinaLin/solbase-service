@@ -14,6 +14,9 @@ type Repository interface {
 	GetByIntentID(ctx context.Context, intentID string) (*payment.Intent, error)
 	UpdateStatus(ctx context.Context, intentID, status string, errorMsg *string) error
 	UpdateWithProof(ctx context.Context, intentID, proof, status string) error
+	// UpdateWithProofIfStatus atomically updates proof and status only if current status matches.
+	// Returns number of affected rows (0 if status didn't match, 1 if successful).
+	UpdateWithProofIfStatus(ctx context.Context, intentID, proof, newStatus, expectedStatus string) (int64, error)
 	UpdateSourceSettled(ctx context.Context, intentID string, details *payment.ProofDetails) error
 	UpdateBaseSettled(ctx context.Context, intentID, txHash, proof string) error
 	UpdateExpired(ctx context.Context, intentID string) error

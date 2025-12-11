@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agent-tech/x402-api-backend/internal/payment"
+	"github.com/agent-tech/x402-api-backend/pkg/utils"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
@@ -18,6 +21,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// ErrTransactionNotFound is returned when transaction receipt is not found yet.
+var ErrTransactionNotFound = errors.New("transaction not found")
+
 // BasePaymentService handles USDC transfers on Base chain.
 type BasePaymentService struct {
 	client       *ethclient.Client
@@ -26,6 +32,7 @@ type BasePaymentService struct {
 	usdcContract common.Address
 	network      string
 	explorerBase string
+	closeOnce    sync.Once
 }
 
 // NewBasePaymentService creates a new Base payment service.
@@ -92,7 +99,18 @@ func (s *BasePaymentService) ExecutePayment(ctx context.Context, request payment
 		"recipient": request.RecipientAddress,
 	}).Info("Starting Base payment")
 
+	// Validate recipient address format before proceeding
+	// This is a defensive check - validation should also happen at the API layer
+	if !utils.IsValidEthAddress(request.RecipientAddress) {
+		return nil, fmt.Errorf("invalid recipient address format: %s", request.RecipientAddress)
+	}
+
 	recipient := common.HexToAddress(request.RecipientAddress)
+
+	// Additional safety check: ensure we're not sending to zero address
+	if recipient == (common.Address{}) {
+		return nil, fmt.Errorf("cannot send to zero address")
+	}
 
 	amountInUsdc := new(big.Int)
 	amountFloat := new(big.Float).SetFloat64(request.Amount * 1e6)
@@ -239,23 +257,30 @@ func (s *BasePaymentService) waitForTransaction(ctx context.Context, txHash comm
 			return receipt, nil
 		}
 
-		if !strings.Contains(err.Error(), "not found") {
-			return nil, err
+		// Check if the error indicates transaction is not found yet
+		// ethereum.NotFound is the standard error from go-ethereum for missing receipts
+		if errors.Is(err, ethereum.NotFound) || strings.Contains(err.Error(), "not found") {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(2 * time.Second):
+				continue
+			}
 		}
 
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
+		// For any other error, return immediately
+		return nil, err
 	}
 }
 
 // Close closes the Ethereum client connection.
+// Safe to call multiple times; only the first call will close the connection.
 func (s *BasePaymentService) Close() {
-	if s.client != nil {
-		s.client.Close()
-	}
+	s.closeOnce.Do(func() {
+		if s.client != nil {
+			s.client.Close()
+		}
+	})
 }
 
 // ExplorerBase returns the explorer base URL.

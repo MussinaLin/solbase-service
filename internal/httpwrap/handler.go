@@ -3,6 +3,8 @@ package httpwrap
 import (
 	"encoding/json"
 	"net/http"
+
+	log "github.com/sirupsen/logrus"
 )
 
 // errorBody represents the JSON structure for error responses.
@@ -26,7 +28,10 @@ func Handler(fn HandlerFunc) http.HandlerFunc {
 				Message:    errResp.ErrorMsg,
 				StatusCode: errResp.StatusCode,
 			}
-			json.NewEncoder(w).Encode(body)
+
+			if err := json.NewEncoder(w).Encode(body); err != nil {
+				log.WithError(err).Error("Failed to encode error response")
+			}
 
 			return
 		}
@@ -43,7 +48,9 @@ func Handler(fn HandlerFunc) http.HandlerFunc {
 		w.WriteHeader(resp.StatusCode)
 
 		if resp.Body != nil {
-			json.NewEncoder(w).Encode(resp.Body)
+			if err := json.NewEncoder(w).Encode(resp.Body); err != nil {
+				log.WithError(err).Error("Failed to encode response body")
+			}
 		}
 	}
 }

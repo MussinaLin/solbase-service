@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"sync"
 
 	"github.com/agent-tech/x402-api-backend/internal/db"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,6 +28,9 @@ type Database struct {
 
 // global database instance.
 var globalDB *Database
+
+// closeOnce ensures Close() is only executed once.
+var closeOnce sync.Once
 
 // Connect initializes the database connection and runs migrations.
 func Connect(databaseURL string, logLevel string) (*Database, error) {
@@ -112,11 +116,14 @@ func RunMigrationsWithDB(sqlDB *sql.DB) error {
 }
 
 // Close closes the database connection pool.
+// Safe to call multiple times; only the first call will close the connection.
 func Close() {
-	if globalDB != nil && globalDB.Pool != nil {
-		globalDB.Pool.Close()
-		log.Info("Database connection closed")
-	}
+	closeOnce.Do(func() {
+		if globalDB != nil && globalDB.Pool != nil {
+			globalDB.Pool.Close()
+			log.Info("Database connection closed")
+		}
+	})
 }
 
 // Ping checks if the database connection is alive.

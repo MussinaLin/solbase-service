@@ -3,14 +3,21 @@ package service
 import (
 	"context"
 	"fmt"
+	"net/mail"
+	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/agent-tech/x402-api-backend/internal/payment"
 	"github.com/agent-tech/x402-api-backend/internal/payment/repository"
+	"github.com/agent-tech/x402-api-backend/pkg/utils"
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
+
+// amountRegex validates amount format: positive number with up to 2 decimal places
+var amountRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,2})?$`)
 
 // Service implements the payment.Service interface.
 type Service struct {
@@ -22,6 +29,7 @@ type Service struct {
 	baseNetwork           string
 	solanaReceiverAddress string
 	bscReceiverAddress    string
+	wg                    sync.WaitGroup // tracks async goroutines for graceful shutdown
 }
 
 // Ensure Service implements payment.Service.
@@ -50,6 +58,35 @@ func New(
 	}
 }
 
+// validateEmail checks if the email format is valid using net/mail.
+func validateEmail(email string) bool {
+	_, err := mail.ParseAddress(email)
+	return err == nil
+}
+
+// validateAmount checks if amount is a valid positive number with up to 2 decimal places.
+func validateAmount(amount string) error {
+	if !amountRegex.MatchString(amount) {
+		return payment.ErrInvalidAmount
+	}
+
+	val, err := strconv.ParseFloat(amount, 64)
+	if err != nil {
+		return payment.ErrInvalidAmount
+	}
+
+	if val <= 0 {
+		return fmt.Errorf("%w: amount must be positive", payment.ErrInvalidAmount)
+	}
+
+	// Maximum amount check (e.g., 1 million USDC)
+	if val > 1000000 {
+		return fmt.Errorf("%w: amount exceeds maximum allowed (1,000,000)", payment.ErrInvalidAmount)
+	}
+
+	return nil
+}
+
 // CreateIntent creates a new payment intent with either email or wallet as receiver.
 func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntentParams) (*payment.Intent, error) {
 	if params.Email == "" && params.Recipient == "" {
@@ -58,6 +95,21 @@ func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntent
 
 	if params.Email != "" && params.Recipient != "" {
 		return nil, fmt.Errorf("%w: cannot provide both email and recipient", payment.ErrInvalidInput)
+	}
+
+	// Validate amount
+	if err := validateAmount(params.Amount); err != nil {
+		return nil, err
+	}
+
+	// Validate email format if provided
+	if params.Email != "" && !validateEmail(params.Email) {
+		return nil, payment.ErrInvalidEmail
+	}
+
+	// Validate recipient address format if provided
+	if params.Recipient != "" && !utils.IsValidEthAddress(params.Recipient) {
+		return nil, payment.ErrInvalidRecipient
 	}
 
 	payerChain := params.PayerChain
@@ -146,37 +198,58 @@ func (s *Service) SubmitProof(ctx context.Context, intentID string, proof string
 	logger := log.WithField("intent_id", intentID)
 	logger.Info("Submitting proof for payment intent")
 
+	// First, get the intent to validate proof amount and check expiration
 	intent, err := s.repo.GetByIntentID(ctx, intentID)
 	if err != nil {
 		return nil, err
 	}
 
-	if intent.Status != payment.StatusAwaitingPayment {
-		return nil, fmt.Errorf("%w: intent status is %s, expected %s", payment.ErrInvalidStatus, intent.Status, payment.StatusAwaitingPayment)
-	}
-
+	// Check expiration first
 	if time.Now().After(intent.ExpiresAt) {
-		s.repo.UpdateExpired(ctx, intentID)
+		if err := s.repo.UpdateExpired(ctx, intentID); err != nil {
+			logger.WithError(err).Error("Failed to update intent as expired")
+		}
 
 		return nil, payment.ErrExpired
 	}
 
+	// Validate proof amount before attempting atomic update
 	if err := s.x402Verifier.ValidateProofAmount(proof, intent.Amount); err != nil {
 		logger.WithError(err).Error("Proof validation failed")
 
 		return nil, fmt.Errorf("%w: %s", payment.ErrProofValidation, err.Error())
 	}
 
-	err = s.repo.UpdateWithProof(ctx, intentID, proof, payment.StatusPending)
+	// Use optimistic locking: atomically update only if status is still AWAITING_PAYMENT
+	// This prevents double-spend vulnerability from concurrent proof submissions
+	rowsAffected, err := s.repo.UpdateWithProofIfStatus(ctx, intentID, proof, payment.StatusPending, payment.StatusAwaitingPayment)
 	if err != nil {
 		logger.WithError(err).Error("Failed to update intent with proof")
 
 		return nil, fmt.Errorf("update payment intent: %w", err)
 	}
 
+	// If no rows were affected, the status was already changed (concurrent update or already processed)
+	if rowsAffected == 0 {
+		// Re-fetch to see current status
+		currentIntent, fetchErr := s.repo.GetByIntentID(ctx, intentID)
+		if fetchErr != nil {
+			return nil, fmt.Errorf("%w: could not verify current status", payment.ErrConcurrentUpdate)
+		}
+
+		logger.WithField("current_status", currentIntent.Status).Warn("Concurrent update detected, intent already processed")
+
+		return nil, fmt.Errorf("%w: intent status is %s, expected %s", payment.ErrInvalidStatus, currentIntent.Status, payment.StatusAwaitingPayment)
+	}
+
 	logger.Info("Proof submitted, launching async processing")
 
+	// Track the goroutine for graceful shutdown
+	s.wg.Add(1)
+
 	go func() {
+		defer s.wg.Done()
+
 		asyncCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 		s.processIntentAsync(asyncCtx, intentID, proof, intent.MerchantRecipient, intent.PayerChain)
@@ -190,7 +263,8 @@ func (s *Service) SubmitProof(ctx context.Context, intentID string, proof string
 
 // GetIntent retrieves a payment intent by ID with combined status + receipt data.
 func (s *Service) GetIntent(ctx context.Context, intentID string) (*payment.Intent, error) {
-	log.WithField("intent_id", intentID).Info("Querying payment intent")
+	logger := log.WithField("intent_id", intentID)
+	logger.Info("Querying payment intent")
 
 	intent, err := s.repo.GetByIntentID(ctx, intentID)
 	if err != nil {
@@ -198,7 +272,11 @@ func (s *Service) GetIntent(ctx context.Context, intentID string) (*payment.Inte
 	}
 
 	if (intent.Status == payment.StatusAwaitingPayment || intent.Status == payment.StatusPending) && time.Now().After(intent.ExpiresAt) {
-		s.repo.UpdateExpired(ctx, intentID)
+		if err := s.repo.UpdateExpired(ctx, intentID); err != nil {
+			logger.WithError(err).Error("Failed to update intent as expired")
+			// Continue anyway - we'll return the expired status in the response
+		}
+
 		intent.Status = payment.StatusExpired
 	}
 
@@ -284,6 +362,11 @@ func (s *Service) processIntentAsync(ctx context.Context, intentID string, settl
 
 	if err := s.triggerBasePayment(ctx, intentID); err != nil {
 		logger.WithError(err).Error("Base payment failed")
+		// Update status with error message so it's visible in GetIntent
+		errMsg := fmt.Sprintf("Base payment failed: %s", err.Error())
+		if updateErr := s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, &errMsg); updateErr != nil {
+			logger.WithError(updateErr).Error("Failed to update intent with Base payment error")
+		}
 	}
 }
 
@@ -323,7 +406,9 @@ func (s *Service) triggerBasePayment(ctx context.Context, intentID string) error
 
 	amount, err := strconv.ParseFloat(intent.Amount, 64)
 	if err != nil {
-		s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, nil)
+		if rollbackErr := s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, nil); rollbackErr != nil {
+			logger.WithError(rollbackErr).Error("Failed to rollback status after amount parse error")
+		}
 
 		return fmt.Errorf("invalid amount: %w", err)
 	}
@@ -336,7 +421,10 @@ func (s *Service) triggerBasePayment(ctx context.Context, intentID string) error
 
 	if err != nil {
 		logger.WithError(err).Error("Base payment failed, rolling back to SOURCE_SETTLED")
-		s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, nil)
+
+		if rollbackErr := s.repo.UpdateStatus(ctx, intentID, payment.StatusSourceSettled, nil); rollbackErr != nil {
+			logger.WithError(rollbackErr).Error("Failed to rollback status after Base payment failure")
+		}
 
 		return fmt.Errorf("Base payment failed: %w", err)
 	}
@@ -388,4 +476,12 @@ func (s *Service) SourceChainExplorerURL(payerChain string) string {
 	default:
 		return "https://solscan.io?cluster=devnet"
 	}
+}
+
+// Shutdown gracefully waits for all async payment processing goroutines to complete.
+// Call this during application shutdown to ensure no payments are left in an inconsistent state.
+func (s *Service) Shutdown() {
+	log.Info("Waiting for async payment processing to complete...")
+	s.wg.Wait()
+	log.Info("All async payment processing completed")
 }

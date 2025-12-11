@@ -29,4 +29,16 @@ var (
 
 	// ErrInvalidPayerChain is returned when an invalid payer chain is specified.
 	ErrInvalidPayerChain = errors.New("invalid payer_chain: must be solana, base, or bsc")
+
+	// ErrConcurrentUpdate is returned when a concurrent update conflicts with the operation.
+	ErrConcurrentUpdate = errors.New("concurrent update detected: intent status has changed")
+
+	// ErrInvalidEmail is returned when email format is invalid.
+	ErrInvalidEmail = errors.New("invalid email format")
+
+	// ErrInvalidRecipient is returned when recipient address format is invalid.
+	ErrInvalidRecipient = errors.New("invalid recipient address format")
+
+	// ErrInvalidAmount is returned when amount is invalid (negative, zero, or malformed).
+	ErrInvalidAmount = errors.New("invalid amount: must be a positive number with up to 2 decimal places")
 )

@@ -57,11 +57,11 @@ func (s *PrivyService) WalletForEmail(ctx context.Context, email string) (string
 
 	logger.Info("Email not found in database, checking Privy")
 
-	privyUser, err := s.userByEmail(email)
+	privyUser, err := s.userByEmail(ctx, email)
 	if err != nil {
 		logger.WithError(err).Info("User not found in Privy, creating new user")
 
-		privyUser, err = s.createUserWithEmail(email)
+		privyUser, err = s.createUserWithEmail(ctx, email)
 		if err != nil {
 			return "", fmt.Errorf("create Privy user: %w", err)
 		}
@@ -71,7 +71,7 @@ func (s *PrivyService) WalletForEmail(ctx context.Context, email string) (string
 	if walletAddress == "" {
 		logger.Info("Creating ethereum wallet for user")
 
-		walletAddress, err = s.createWalletForUser(privyUser.ID)
+		walletAddress, err = s.createWalletForUser(ctx, privyUser.ID)
 		if err != nil {
 			return "", fmt.Errorf("create wallet: %w", err)
 		}
@@ -102,7 +102,7 @@ type linkedAccount struct {
 }
 
 // userByEmail queries Privy for an existing user by email.
-func (s *PrivyService) userByEmail(email string) (*privyUser, error) {
+func (s *PrivyService) userByEmail(ctx context.Context, email string) (*privyUser, error) {
 	url := fmt.Sprintf("%s/users/email/address", s.authURL)
 
 	payload := map[string]string{
@@ -114,7 +114,7 @@ func (s *PrivyService) userByEmail(email string) (*privyUser, error) {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -132,7 +132,10 @@ func (s *PrivyService) userByEmail(email string) (*privyUser, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Privy API error (status %d): failed to read response body", resp.StatusCode)
+		}
 
 		return nil, fmt.Errorf("Privy API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -146,7 +149,7 @@ func (s *PrivyService) userByEmail(email string) (*privyUser, error) {
 }
 
 // createUserWithEmail creates a new Privy user with the given email.
-func (s *PrivyService) createUserWithEmail(email string) (*privyUser, error) {
+func (s *PrivyService) createUserWithEmail(ctx context.Context, email string) (*privyUser, error) {
 	url := fmt.Sprintf("%s/users/import", s.authURL)
 
 	payload := map[string]interface{}{
@@ -167,7 +170,7 @@ func (s *PrivyService) createUserWithEmail(email string) (*privyUser, error) {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -181,7 +184,10 @@ func (s *PrivyService) createUserWithEmail(email string) (*privyUser, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("Privy API error (status %d): failed to read response body", resp.StatusCode)
+		}
 
 		return nil, fmt.Errorf("Privy API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
@@ -212,7 +218,7 @@ func (s *PrivyService) createUserWithEmail(email string) (*privyUser, error) {
 }
 
 // createWalletForUser creates an ethereum wallet for a Privy user.
-func (s *PrivyService) createWalletForUser(userID string) (string, error) {
+func (s *PrivyService) createWalletForUser(ctx context.Context, userID string) (string, error) {
 	url := fmt.Sprintf("%s/wallets", s.apiURL)
 
 	payload := map[string]interface{}{
@@ -227,7 +233,7 @@ func (s *PrivyService) createWalletForUser(userID string) (string, error) {
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
@@ -241,7 +247,10 @@ func (s *PrivyService) createWalletForUser(userID string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return "", fmt.Errorf("Privy API error (status %d): failed to read response body", resp.StatusCode)
+		}
 
 		return "", fmt.Errorf("Privy API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
