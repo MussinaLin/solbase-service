@@ -84,9 +84,11 @@ make install-tools            # Install air and golangci-lint
    → If email: resolve to Base wallet via Privy
    → If recipient: use wallet address directly
    → Create intent in AWAITING_PAYMENT status
-   → Return intent_id + wallet address + payer_chain
+   → Return intent_id + payment_requirements (X402 standard)
 
-2. Client completes X402 payment on selected chain (external)
+2. Client signs X402 authorization using payment_requirements
+   → Use X402 SDK: createPaymentHeader(wallet, x402Version, paymentRequirements)
+   → Client only SIGNS authorization, NO on-chain transaction yet
 
 3. POST /intents/{intent_id} (settle_proof)
    → Validate proof matches intent (amount)
@@ -111,8 +113,8 @@ make install-tools            # Install air and golangci-lint
 5. AWAITING_PAYMENT/PENDING → EXPIRED (10 min timeout)
 ```
 
-**Important:** The settlement step (Step 2) actually executes the payment on the source chain.
-Without settlement, the proof is only verified but funds are not transferred.
+**Important:** The client only signs an authorization - they do NOT execute the transaction.
+The settlement step (Step 2) actually executes the payment on the source chain via the X402 facilitator.
 
 ### Project Structure
 
@@ -189,11 +191,45 @@ SQL migrations in `database/migrations/` (goose format with `-- +goose Up/Down` 
 
 ## Key Implementation Details
 
-### USDC Contract Addresses
+### X402 PaymentRequirements
 
-Hardcoded in `internal/payment/service/base_payment.go`:
-- **Base Sepolia**: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
-- **Base Mainnet**: `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913`
+The `POST /intents` response includes `payment_requirements` following the X402 protocol standard. Clients use this with the X402 SDK to create signed payment authorizations:
+
+```json
+{
+  "intent_id": "uuid",
+  "payment_requirements": {
+    "scheme": "exact",
+    "network": "solana-devnet",
+    "maxAmountRequired": "10000000",
+    "payTo": "ReceiverAddress",
+    "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "maxTimeoutSeconds": 600,
+    "resource": "/api/intents/uuid",
+    "description": "Payment of 10.00 USDC"
+  }
+}
+```
+
+**Client usage with X402 SDK:**
+```typescript
+const result = await fetch('/api/intents', { method: 'POST', body: JSON.stringify({...}) }).then(r => r.json());
+const paymentHeader = await createPaymentHeader(wallet, 1, result.payment_requirements);
+await fetch(`/api/intents/${result.intent_id}`, { method: 'POST', body: JSON.stringify({ settle_proof: paymentHeader }) });
+```
+
+### USDC Contract/Mint Addresses
+
+Defined in `internal/payment/service/service.go` (for PaymentRequirements) and `base_payment.go` (for Base transfers):
+
+| Network | USDC Address |
+|---------|--------------|
+| **Solana Devnet** | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+| **Solana Mainnet** | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+| **Base Sepolia** | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+| **Base Mainnet** | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` |
+| **BSC Testnet** | `0x64544969ed7EBf5f083679233325356EbE738930` |
+| **BSC Mainnet** | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
 
 ### Privy Integration
 

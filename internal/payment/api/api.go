@@ -44,17 +44,30 @@ type SubmitProofRequest struct {
 
 // Response DTOs
 
+// PaymentRequirementsResponse represents X402 payment requirements in the API response.
+type PaymentRequirementsResponse struct {
+	Scheme            string `json:"scheme"`
+	Network           string `json:"network"`
+	MaxAmountRequired string `json:"maxAmountRequired"`
+	PayTo             string `json:"payTo"`
+	Asset             string `json:"asset"`
+	MaxTimeoutSeconds int    `json:"maxTimeoutSeconds"`
+	Resource          string `json:"resource"`
+	Description       string `json:"description"`
+}
+
 // CreateIntentResponse represents the response after creating an intent.
 type CreateIntentResponse struct {
-	IntentID          string    `json:"intent_id"`
-	Email             *string   `json:"email,omitempty"`
-	MerchantRecipient string    `json:"merchant_recipient"`
-	SourceRecipient   *string   `json:"source_recipient,omitempty"`
-	Amount            string    `json:"amount"`
-	PayerChain        string    `json:"payer_chain"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"created_at"`
-	ExpiresAt         time.Time `json:"expires_at"`
+	IntentID            string                       `json:"intent_id"`
+	Email               *string                      `json:"email,omitempty"`
+	MerchantRecipient   string                       `json:"merchant_recipient"`
+	SourceRecipient     *string                      `json:"source_recipient,omitempty"`
+	Amount              string                       `json:"amount"`
+	PayerChain          string                       `json:"payer_chain"`
+	Status              string                       `json:"status"`
+	CreatedAt           time.Time                    `json:"created_at"`
+	ExpiresAt           time.Time                    `json:"expires_at"`
+	PaymentRequirements *PaymentRequirementsResponse `json:"payment_requirements"`
 }
 
 // SubmitProofResponse represents the response after submitting a proof.
@@ -112,7 +125,7 @@ func createIntent(svc *service.Service) httpwrap.HandlerFunc {
 
 		ctx := r.Context()
 
-		intent, err := svc.CreateIntent(ctx, &payment.CreateIntentParams{
+		result, err := svc.CreateIntent(ctx, &payment.CreateIntentParams{
 			Email:      req.Email,
 			Recipient:  req.Recipient,
 			Amount:     req.Amount,
@@ -140,18 +153,34 @@ func createIntent(svc *service.Service) httpwrap.HandlerFunc {
 			}
 		}
 
+		// Build payment requirements response
+		var paymentReqs *PaymentRequirementsResponse
+		if result.PaymentRequirements != nil {
+			paymentReqs = &PaymentRequirementsResponse{
+				Scheme:            result.PaymentRequirements.Scheme,
+				Network:           result.PaymentRequirements.Network,
+				MaxAmountRequired: result.PaymentRequirements.MaxAmountRequired,
+				PayTo:             result.PaymentRequirements.PayTo,
+				Asset:             result.PaymentRequirements.Asset,
+				MaxTimeoutSeconds: result.PaymentRequirements.MaxTimeoutSeconds,
+				Resource:          result.PaymentRequirements.Resource,
+				Description:       result.PaymentRequirements.Description,
+			}
+		}
+
 		return &httpwrap.Response{
 			StatusCode: http.StatusCreated,
 			Body: &CreateIntentResponse{
-				IntentID:          intent.IntentID,
-				Email:             intent.ReceiverEmail,
-				MerchantRecipient: intent.MerchantRecipient,
-				SourceRecipient:   intent.SourceRecipient,
-				Amount:            intent.Amount,
-				PayerChain:        intent.PayerChain,
-				Status:            intent.Status,
-				CreatedAt:         intent.CreatedAt,
-				ExpiresAt:         intent.ExpiresAt,
+				IntentID:            result.Intent.IntentID,
+				Email:               result.Intent.ReceiverEmail,
+				MerchantRecipient:   result.Intent.MerchantRecipient,
+				SourceRecipient:     result.Intent.SourceRecipient,
+				Amount:              result.Intent.Amount,
+				PayerChain:          result.Intent.PayerChain,
+				Status:              result.Intent.Status,
+				CreatedAt:           result.Intent.CreatedAt,
+				ExpiresAt:           result.Intent.ExpiresAt,
+				PaymentRequirements: paymentReqs,
 			},
 		}, nil
 	}

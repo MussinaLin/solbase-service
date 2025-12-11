@@ -19,6 +19,19 @@ import (
 // amountRegex validates amount format: positive number with up to 6 decimal places
 var amountRegex = regexp.MustCompile(`^[0-9]+(\.[0-9]{1,6})?$`)
 
+// USDC contract/mint addresses per network
+var usdcAssets = map[string]string{
+	// Solana
+	"solana-devnet":       "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", // Devnet USDC
+	"solana-mainnet-beta": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", // Mainnet USDC
+	// Base
+	"base-sepolia": "0x036CbD53842c5426634e7929541eC2318f3dCF7e", // Base Sepolia USDC
+	"base":         "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // Base Mainnet USDC
+	// BSC
+	"bsc-testnet": "0x64544969ed7EBf5f083679233325356EbE738930", // BSC Testnet USDC
+	"bsc":         "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", // BSC Mainnet USDC
+}
+
 // Service implements the payment.Service interface.
 type Service struct {
 	repo                  repository.Repository
@@ -27,6 +40,8 @@ type Service struct {
 	privyService          *PrivyService
 	solanaNetwork         string
 	baseNetwork           string
+	baseSourceNetwork     string
+	bscNetwork            string
 	solanaReceiverAddress string
 	bscReceiverAddress    string
 	wg                    sync.WaitGroup // tracks async goroutines for graceful shutdown
@@ -43,6 +58,8 @@ func New(
 	privyService *PrivyService,
 	solanaNetwork string,
 	baseNetwork string,
+	baseSourceNetwork string,
+	bscNetwork string,
 	solanaReceiverAddress string,
 	bscReceiverAddress string,
 ) *Service {
@@ -53,6 +70,8 @@ func New(
 		privyService:          privyService,
 		solanaNetwork:         solanaNetwork,
 		baseNetwork:           baseNetwork,
+		baseSourceNetwork:     baseSourceNetwork,
+		bscNetwork:            bscNetwork,
 		solanaReceiverAddress: solanaReceiverAddress,
 		bscReceiverAddress:    bscReceiverAddress,
 	}
@@ -88,7 +107,7 @@ func validateAmount(amount string) error {
 }
 
 // CreateIntent creates a new payment intent with either email or wallet as receiver.
-func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntentParams) (*payment.Intent, error) {
+func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntentParams) (*payment.IntentWithRequirements, error) {
 	if params.Email == "" && params.Recipient == "" {
 		return nil, fmt.Errorf("%w: either email or recipient is required", payment.ErrInvalidInput)
 	}
@@ -188,9 +207,65 @@ func (s *Service) CreateIntent(ctx context.Context, params *payment.CreateIntent
 		return nil, fmt.Errorf("create payment intent: %w", err)
 	}
 
+	// Build X402 PaymentRequirements
+	paymentRequirements := s.buildPaymentRequirements(createdIntent)
+
 	logger.Info("Payment intent created, awaiting payment proof")
 
-	return createdIntent, nil
+	return &payment.IntentWithRequirements{
+		Intent:              createdIntent,
+		PaymentRequirements: paymentRequirements,
+	}, nil
+}
+
+// buildPaymentRequirements constructs X402 PaymentRequirements for an intent.
+func (s *Service) buildPaymentRequirements(intent *payment.Intent) *payment.PaymentRequirements {
+	// Determine network based on payer chain
+	var network string
+	switch intent.PayerChain {
+	case "solana":
+		network = s.solanaNetwork
+	case "base":
+		network = s.baseSourceNetwork
+	case "bsc":
+		network = s.bscNetwork
+	default:
+		network = s.solanaNetwork
+	}
+
+	// Get USDC asset address for the network
+	asset := usdcAssets[network]
+
+	// Determine payTo address
+	// For Solana/BSC: use source recipient (chain-specific receiver)
+	// For Base: use merchant recipient directly
+	var payTo string
+	if intent.SourceRecipient != nil {
+		payTo = *intent.SourceRecipient
+	} else {
+		payTo = intent.MerchantRecipient
+	}
+
+	// Convert amount to microdollars (USDC has 6 decimals)
+	amountMicros, _ := amountToMicrodollars(intent.Amount)
+	maxAmountRequired := strconv.FormatUint(amountMicros, 10)
+
+	// Calculate timeout in seconds until expiry
+	maxTimeoutSeconds := int(time.Until(intent.ExpiresAt).Seconds())
+	if maxTimeoutSeconds < 0 {
+		maxTimeoutSeconds = 0
+	}
+
+	return &payment.PaymentRequirements{
+		Scheme:            "exact",
+		Network:           network,
+		MaxAmountRequired: maxAmountRequired,
+		PayTo:             payTo,
+		Asset:             asset,
+		MaxTimeoutSeconds: maxTimeoutSeconds,
+		Resource:          fmt.Sprintf("/api/intents/%s", intent.IntentID),
+		Description:       fmt.Sprintf("Payment of %s USDC", intent.Amount),
+	}
 }
 
 // SubmitProof submits a payment proof for an existing intent.

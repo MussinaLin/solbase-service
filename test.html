@@ -333,11 +333,11 @@
     <h1>X402 Cross-Chain Payment API Tester</h1>
 
     <div class="info-box">
-        <h3>Payment Flow</h3>
-        <p><strong>Step 1:</strong> Select payer chain (Solana/Base/BSC) and create payment intent with email or wallet + amount</p>
-        <p><strong>Step 2:</strong> Connect wallet (MetaMask for Base/BSC, Glow/Phantom for Solana) and sign the payment authorization</p>
-        <p><strong>Step 3:</strong> Submit X402 proof to the backend (triggers verification + settlement on source chain)</p>
-        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED (funds settled on source chain, then transferred to Base)</p>
+        <h3>Payment Flow (X402 Protocol)</h3>
+        <p><strong>Step 1:</strong> Create payment intent → receive <code>payment_requirements</code> (X402 standard)</p>
+        <p><strong>Step 2:</strong> Connect wallet and sign authorization using <code>payment_requirements</code> (NO on-chain TX yet)</p>
+        <p><strong>Step 3:</strong> Submit signed proof → backend calls X402 facilitator to EXECUTE the payment</p>
+        <p><strong>Step 4:</strong> Poll status until BASE_SETTLED (source chain settled → funds transferred to Base)</p>
     </div>
 
     <div class="info-box">
@@ -411,6 +411,12 @@
                 <p class="wallet-address" id="sourceRecipientWallet"></p>
             </div>
             <p><strong>Amount:</strong> <span id="paymentAmountDisplay"></span> USDC</p>
+
+            <div id="paymentRequirementsInfo" style="margin-top: 15px; padding: 10px; background: #f0f8ff; border-radius: 6px;">
+                <p><strong>X402 Payment Requirements:</strong></p>
+                <pre id="paymentRequirementsDisplay" style="font-size: 11px; margin: 5px 0; overflow-x: auto;"></pre>
+            </div>
+
             <p style="margin-top: 10px; font-style: italic; color: #666;">Connect your wallet below to sign the payment authorization.</p>
         </div>
     </div>
@@ -418,9 +424,9 @@
     <div class="section" id="walletSection" style="display:none;">
         <div class="step-title">
             <span class="step-number">2</span>
-            <h2>Sign Payment with Wallet</h2>
+            <h2>Sign Payment Authorization</h2>
         </div>
-        <p>Connect your wallet to sign the X402 payment authorization. The facilitator will execute the on-chain transfer.</p>
+        <p>Connect your wallet to sign the X402 payment authorization using <code>payment_requirements</code>. <strong>No on-chain transaction is executed yet</strong> - you're only signing an authorization that the X402 facilitator will use to execute the payment later.</p>
 
         <div id="walletStatus" class="wallet-status disconnected">
             <p><strong>Wallet:</strong> <span id="connectedAddress">Not connected</span></p>
@@ -439,7 +445,7 @@
             <span class="step-number">3</span>
             <h2>Submit X402 Proof</h2>
         </div>
-        <p>After signing the payment authorization, submit the proof to trigger Base chain transfer.</p>
+        <p>After signing the payment authorization, submit the proof. The backend will call the X402 facilitator to <strong>execute the payment on the source chain</strong>, then transfer funds to Base.</p>
 
         <label for="intentIdForProof">Intent ID:</label>
         <input type="text" id="intentIdForProof" placeholder="Enter intent UUID from Step 1">
@@ -633,6 +639,14 @@
                         document.getElementById('sourceRecipientWallet').textContent = data.source_recipient;
                     } else {
                         document.getElementById('sourceRecipientInfo').style.display = 'none';
+                    }
+
+                    // Display payment_requirements if present
+                    if (data.payment_requirements) {
+                        document.getElementById('paymentRequirementsInfo').style.display = 'block';
+                        document.getElementById('paymentRequirementsDisplay').textContent = JSON.stringify(data.payment_requirements, null, 2);
+                    } else {
+                        document.getElementById('paymentRequirementsInfo').style.display = 'none';
                     }
 
                     // Pre-fill other fields
@@ -989,29 +1003,35 @@
         }
 
         // Sign EVM payment (EIP-712 TransferWithAuthorization)
+        // Uses payment_requirements from the backend for consistency
         async function signEvmPayment(chain) {
             const chainConfig = EVM_CHAINS[chain];
+            const paymentReqs = currentIntent.payment_requirements;
 
-            // Determine the recipient address based on chain:
-            // - For Base: use merchant_recipient (direct transfer to user's Base wallet)
-            // - For BSC: use source_recipient (BSC receiver address, backend will forward to Base)
-            let recipientAddress;
-            if (chain === 'base') {
-                recipientAddress = currentIntent.merchant_recipient;
-            } else if (chain === 'bsc') {
-                recipientAddress = currentIntent.source_recipient;
-                if (!recipientAddress) {
-                    throw new Error('No source_recipient in intent. Backend may not support BSC payments.');
-                }
-            } else {
-                recipientAddress = currentIntent.merchant_recipient;
+            // Use payTo from payment_requirements (server-provided)
+            const recipientAddress = paymentReqs ? paymentReqs.payTo : (
+                chain === 'base' ? currentIntent.merchant_recipient : currentIntent.source_recipient
+            );
+
+            if (!recipientAddress) {
+                throw new Error('No recipient address available. Check payment_requirements.');
             }
 
-            console.log(`EVM payment on ${chain} - recipient:`, recipientAddress);
+            // Use maxAmountRequired from payment_requirements (already in atomic units)
+            const amountAtomic = paymentReqs ? paymentReqs.maxAmountRequired :
+                Math.floor(parseFloat(currentIntent.amount) * 1e6).toString();
 
-            // Convert amount to USDC atomic units (6 decimals)
-            const amountFloat = parseFloat(currentIntent.amount);
-            const amountAtomic = Math.floor(amountFloat * 1e6).toString();
+            // Use asset from payment_requirements or fallback to chain config
+            const usdcAddress = paymentReqs ? paymentReqs.asset : chainConfig.usdcAddress;
+
+            // Use network from payment_requirements or fallback
+            const network = paymentReqs ? paymentReqs.network : chainConfig.network;
+
+            console.log(`EVM payment using payment_requirements:`);
+            console.log(`  - Network: ${network}`);
+            console.log(`  - PayTo: ${recipientAddress}`);
+            console.log(`  - Asset: ${usdcAddress}`);
+            console.log(`  - Amount: ${amountAtomic}`);
 
             // Generate random nonce (32 bytes)
             const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
@@ -1019,12 +1039,12 @@
 
             const now = Math.floor(Date.now() / 1000);
 
-            // EIP-712 Domain
+            // EIP-712 Domain - use USDC contract from payment_requirements
             const domain = {
                 name: 'USD Coin',
                 version: '2',
                 chainId: chainConfig.chainIdDecimal,
-                verifyingContract: chainConfig.usdcAddress
+                verifyingContract: usdcAddress
             };
 
             // EIP-712 Types
@@ -1054,11 +1074,11 @@
             const signer = await provider.getSigner();
             const signature = await signer.signTypedData(domain, types, message);
 
-            // Build X402 payload
+            // Build X402 payload using network from payment_requirements
             const payload = {
                 x402Version: 1,
-                scheme: 'exact',
-                network: chainConfig.network,
+                scheme: paymentReqs ? paymentReqs.scheme : 'exact',
+                network: network,
                 payload: {
                     signature: signature,
                     authorization: {
@@ -1129,26 +1149,45 @@
         }
 
         // Sign Solana payment with SPL Token Transfer
+        // Uses payment_requirements from the backend for consistency
         async function signSolanaPayment() {
             const walletInfo = getSolanaWallet();
             if (!walletInfo) throw new Error('No Solana wallet available');
 
             const { Connection, PublicKey, Transaction } = solanaWeb3;
+            const paymentReqs = currentIntent.payment_requirements;
 
-            // Get the source recipient (Solana address) from the intent
-            // For Solana, payments go to source_recipient, NOT merchant_recipient
-            const sourceRecipient = currentIntent.source_recipient;
+            // Use payTo from payment_requirements (server-provided)
+            const sourceRecipient = paymentReqs ? paymentReqs.payTo : currentIntent.source_recipient;
             if (!sourceRecipient) {
-                throw new Error('No source_recipient in intent. Backend may not support Solana payments.');
+                throw new Error('No recipient in payment_requirements. Backend may not support Solana payments.');
             }
 
-            console.log('Solana payment - source_recipient:', sourceRecipient);
+            // Use asset (USDC mint) from payment_requirements
+            const usdcMintAddress = paymentReqs ? paymentReqs.asset : SOLANA_CONFIG.usdcMint;
 
-            // Connect to devnet
-            const connection = new Connection(SOLANA_CONFIG.rpcUrl, 'confirmed');
+            // Use maxAmountRequired from payment_requirements (already in atomic units)
+            const amountAtomic = paymentReqs ? parseInt(paymentReqs.maxAmountRequired) :
+                Math.floor(parseFloat(currentIntent.amount) * 1e6);
+
+            // Use network from payment_requirements
+            const network = paymentReqs ? paymentReqs.network : SOLANA_CONFIG.network;
+
+            console.log(`Solana payment using payment_requirements:`);
+            console.log(`  - Network: ${network}`);
+            console.log(`  - PayTo: ${sourceRecipient}`);
+            console.log(`  - Asset (USDC Mint): ${usdcMintAddress}`);
+            console.log(`  - Amount: ${amountAtomic}`);
+
+            // Determine RPC URL based on network
+            const rpcUrl = network === 'solana-mainnet-beta' ?
+                'https://api.mainnet-beta.solana.com' : SOLANA_CONFIG.rpcUrl;
+
+            // Connect to network
+            const connection = new Connection(rpcUrl, 'confirmed');
 
             // Setup public keys
-            const usdcMint = new PublicKey(SOLANA_CONFIG.usdcMint);
+            const usdcMint = new PublicKey(usdcMintAddress);
             const payerPubkey = new PublicKey(connectedWalletAddress);
             const recipientPubkey = new PublicKey(sourceRecipient);
 
@@ -1158,12 +1197,6 @@
 
             console.log('Payer ATA:', payerAta.toString());
             console.log('Recipient ATA:', recipientAta.toString());
-
-            // Convert amount to USDC atomic units (6 decimals)
-            const amountFloat = parseFloat(currentIntent.amount);
-            const amountAtomic = Math.floor(amountFloat * 1e6);
-
-            console.log('Amount (atomic):', amountAtomic);
 
             // Create SPL Token Transfer instruction
             const transferInstruction = createSplTransferInstruction(
@@ -1188,11 +1221,11 @@
             // Serialize to base64
             const serialized = signedTx.serialize().toString('base64');
 
-            // Build X402 payload for Solana
+            // Build X402 payload for Solana using network from payment_requirements
             const payload = {
                 x402Version: 1,
-                scheme: 'exact',
-                network: SOLANA_CONFIG.network,
+                scheme: paymentReqs ? paymentReqs.scheme : 'exact',
+                network: network,
                 payload: {
                     serializedTransaction: serialized
                 }

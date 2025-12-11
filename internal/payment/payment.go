@@ -49,7 +49,7 @@ type Intent struct {
 
 // Service defines the payment intent service interface.
 type Service interface {
-	CreateIntent(ctx context.Context, params *CreateIntentParams) (*Intent, error)
+	CreateIntent(ctx context.Context, params *CreateIntentParams) (*IntentWithRequirements, error)
 	SubmitProof(ctx context.Context, intentID string, proof string) (*Intent, error)
 	GetIntent(ctx context.Context, intentID string) (*Intent, error)
 }
@@ -104,4 +104,23 @@ type IntentWithPayments struct {
 	Intent        *Intent
 	SourcePayment *SourcePayment
 	BasePayment   *BasePayment
+}
+
+// PaymentRequirements represents X402 payment requirements for a payment intent.
+// This follows the X402 protocol specification and can be used with X402 client SDKs.
+type PaymentRequirements struct {
+	Scheme            string `json:"scheme"`
+	Network           string `json:"network"`
+	MaxAmountRequired string `json:"maxAmountRequired"`
+	PayTo             string `json:"payTo"`
+	Asset             string `json:"asset"`
+	MaxTimeoutSeconds int    `json:"maxTimeoutSeconds"`
+	Resource          string `json:"resource"`
+	Description       string `json:"description"`
+}
+
+// IntentWithRequirements represents an intent with its X402 payment requirements.
+type IntentWithRequirements struct {
+	Intent              *Intent
+	PaymentRequirements *PaymentRequirements
 }

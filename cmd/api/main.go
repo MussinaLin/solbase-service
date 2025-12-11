@@ -75,6 +75,8 @@ func run() error {
 		privyService,
 		cfg.SolanaNetwork,
 		cfg.BaseNetwork,
+		cfg.BaseSourceNetwork,
+		cfg.BSCNetwork,
 		cfg.SolanaReceiverAddress,
 		cfg.BSCReceiverAddress,
 	)

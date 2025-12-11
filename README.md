@@ -136,11 +136,24 @@ Create a payment intent with receiver's email address OR wallet address. Returns
   "payer_chain": "solana",
   "status": "AWAITING_PAYMENT",
   "created_at": "2024-01-15T10:30:00Z",
-  "expires_at": "2024-01-15T10:40:00Z"
+  "expires_at": "2024-01-15T10:40:00Z",
+  "payment_requirements": {
+    "scheme": "exact",
+    "network": "solana-devnet",
+    "maxAmountRequired": "10000000",
+    "payTo": "Your_Solana_Address",
+    "asset": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    "maxTimeoutSeconds": 600,
+    "resource": "/api/intents/550e8400-e29b-41d4-a716-446655440000",
+    "description": "Payment of 10.00 USDC"
+  }
 }
 ```
 
-Note: `email` field is only included when email was provided in request. `source_recipient` is the payment receiver address on the payer chain (Solana/BSC) - only included for non-Base payer chains.
+**Notes:**
+- `email` field is only included when email was provided in request
+- `source_recipient` is the payment receiver address on the payer chain (Solana/BSC) - only included for non-Base payer chains
+- `payment_requirements` follows the X402 protocol standard - use with X402 SDK to create payment authorization
 
 ### POST /intents/{intent_id} - Submit Proof
 
@@ -204,9 +217,15 @@ Poll this endpoint to track payment progress.
    If email: resolve → Base wallet via Privy
    If recipient: use wallet directly
    ↓
+   Return intent_id + payment_requirements (X402 standard)
+   ↓
    AWAITING_PAYMENT ────────────────────> EXPIRED (10 min timeout)
 
-2. Client completes X402 payment on selected chain (Solana/Base/BSC)
+2. Client signs X402 authorization (NO on-chain transaction yet)
+   ↓
+   Use X402 SDK: createPaymentHeader(wallet, x402Version, payment_requirements)
+   ↓
+   Returns settle_proof (signed authorization)
 
 3. POST /intents/{intent_id} (settle_proof)
    ↓
@@ -219,6 +238,7 @@ Poll this endpoint to track payment progress.
    ├──> VERIFICATION_FAILED (invalid proof)
    │
    │ (goroutine: settle payment on source chain via X402 facilitator)
+   │  ⚠️ THIS step actually EXECUTES the payment on source chain
    │
    ├──> VERIFICATION_FAILED (settlement failed)
    │
@@ -233,8 +253,8 @@ Poll this endpoint to track payment progress.
                       └──> SOURCE_SETTLED (rollback on failure)
 ```
 
-**Note:** The settlement step actually executes the payment on the source chain via the X402 facilitator.
-Without settlement, the proof is only verified but funds are not transferred.
+**Important:** The client only SIGNS an authorization - they do NOT execute any on-chain transaction.
+The settlement step (via X402 facilitator) actually executes the payment on the source chain.
 
 ## Project Structure
 
@@ -465,6 +485,44 @@ curl http://localhost:3001/health
   }
 }
 ```
+
+## X402 Integration
+
+### PaymentRequirements
+
+The `POST /intents` response includes `payment_requirements` following the X402 protocol standard. Use this with the X402 SDK to create signed payment authorizations:
+
+```typescript
+// 1. Create intent and get payment_requirements
+const intent = await fetch('/api/intents', {
+  method: 'POST',
+  body: JSON.stringify({ email: 'user@example.com', amount: '10.00', payer_chain: 'solana' })
+}).then(r => r.json());
+
+// 2. Create payment header using X402 SDK (handles EVM/Solana automatically)
+const paymentHeader = await createPaymentHeader(
+  wallet,                              // User's wallet (EVM or Solana)
+  1,                                   // X402 version
+  intent.payment_requirements          // From our API response
+);
+
+// 3. Submit proof
+await fetch(`/api/intents/${intent.intent_id}`, {
+  method: 'POST',
+  body: JSON.stringify({ settle_proof: paymentHeader })
+});
+```
+
+### USDC Contract/Mint Addresses
+
+| Network | USDC Address |
+|---------|--------------|
+| Solana Devnet | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+| Solana Mainnet | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+| Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+| Base Mainnet | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` |
+| BSC Testnet | `0x64544969ed7EBf5f083679233325356EbE738930` |
+| BSC Mainnet | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
 
 ## Key Dependencies
 
